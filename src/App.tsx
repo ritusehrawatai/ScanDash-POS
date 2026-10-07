@@ -9,6 +9,7 @@ import { Sidebar, NavTab } from './components/Sidebar';
 import { PosTerminal } from './components/PosTerminal/PosTerminal';
 import { ProductList } from './components/ProductManagement/ProductList';
 import { InventoryList } from './components/InventoryManagement/InventoryList';
+import { InvoiceUploadView } from './components/InvoiceManagement/InvoiceUploadView';
 import { HealthDashboard } from './components/HealthDashboard';
 import { ArchitectureView } from './components/ArchitectureView';
 import { ApiExplorer } from './components/ApiExplorer';
@@ -74,6 +75,8 @@ export default function App() {
             {activeTab === 'products' && <ProductList />}
 
             {activeTab === 'inventory' && <InventoryList />}
+
+            {activeTab === 'invoices' && <InvoiceUploadView />}
 
             {activeTab === 'health' && (
               <HealthDashboard

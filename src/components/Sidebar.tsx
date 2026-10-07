@@ -7,12 +7,13 @@ import {
   Package,
   Boxes,
   FileScan,
+  UploadCloud,
   BarChart3,
   BookOpen,
   Store,
 } from 'lucide-react';
 
-export type NavTab = 'pos' | 'products' | 'inventory' | 'health' | 'architecture' | 'explorer' | 'setup';
+export type NavTab = 'pos' | 'products' | 'inventory' | 'invoices' | 'health' | 'architecture' | 'explorer' | 'setup';
 
 interface SidebarProps {
   activeTab: NavTab;
@@ -85,6 +86,24 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
               <span>Inventory Management</span>
             </div>
             <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+          </button>
+
+          {/* Purchase Invoices (Admin / Owner) */}
+          <button
+            onClick={() => onTabChange('invoices')}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-colors text-left cursor-pointer ${
+              activeTab === 'invoices'
+                ? 'bg-emerald-700 text-white shadow-xs'
+                : 'text-stone-300 hover:bg-stone-800 hover:text-white'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <UploadCloud className="w-4 h-4" />
+              <span>Invoices & OCR Review</span>
+            </div>
+            <span className="text-[9px] uppercase px-1 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40 font-mono">
+              OCR
+            </span>
           </button>
         </div>
 
@@ -159,14 +178,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
         <div className="p-3 pt-2 space-y-1 border-t border-stone-800/60">
           <div className="px-3 py-1.5 text-[11px] font-semibold text-stone-400 uppercase tracking-wider">
             Planned Modules
-          </div>
-
-          <div className="px-3 py-2 rounded-md text-xs text-stone-400 flex items-center justify-between opacity-70">
-            <div className="flex items-center gap-2.5">
-              <FileScan className="w-4 h-4 text-stone-400" />
-              <span>Invoice OCR Scanning</span>
-            </div>
-            <span className="text-[10px] font-mono text-stone-400">Phase 3</span>
           </div>
 
           <div className="px-3 py-2 rounded-md text-xs text-stone-400 flex items-center justify-between opacity-70">

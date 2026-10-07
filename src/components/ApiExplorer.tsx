@@ -10,6 +10,42 @@ interface EndpointOption {
 
 const ENDPOINTS: EndpointOption[] = [
   {
+    label: 'POST /api/invoices/1/ocr — Run Tesseract OCR on uploaded invoice (Extract items, flag low-confidence values)',
+    method: 'POST',
+    path: '/api/invoices/1/ocr',
+  },
+  {
+    label: 'GET /api/invoices/1/ocr — Get OCR extracted data & manual review flags for invoice #1',
+    method: 'GET',
+    path: '/api/invoices/1/ocr',
+  },
+  {
+    label: 'GET /api/invoices — Get all uploaded purchase invoices ledger',
+    method: 'GET',
+    path: '/api/invoices',
+  },
+  {
+    label: 'POST /api/invoices/upload — Upload invoice (Status: UPLOADED, JPG/JPEG/PNG/PDF validation)',
+    method: 'POST',
+    path: '/api/invoices/upload',
+    defaultBody: JSON.stringify(
+      {
+        filename: 'invoice-sample.pdf',
+        mimeType: 'application/pdf',
+        base64Data: 'JVBERi0xLjQKJcTl8uXrp/Og0MTGCjQgMCBvYmoKPDwgL0xlbmd0aCAxNSAvRmlsdGVyIC9GbGF0ZURlY29kZSA+PgpzdHJlYW0KeJzLSM3JyVcAABswA78KZW5kc3RyZWFtCmVuZG9iagoxIDAgb2JqCjw8IC9UeXBlIC9DYXRhbG9nIC9QYWdlcyAyIDAgUiA+PgplbmRvYmoKMiAwIG9iago8PCAvVHlwZSAvUGFnZXMgL0tpZHMgWyAzIDAgUiBdIC9Db3VudCAxID4+CmVuZG9iagozIDAgb2JqCjw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL0NvbnRlbnRzIDQgMCBSID4+CmVuZG9iagp4cmVmCjAgNQowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwNzMgMDAwMDAgbiAKMDAwMDAwMDEyOSAwMDAwMCBuIAowMDAwMDAwMTgzIDAwMDAwIG4gCjAwMDAwMDAwMTUgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA1IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgoyNDMKJSVFT0Y=',
+        notes: 'Sample vendor invoice for produce',
+        uploadedBy: 'Store Owner / Admin',
+      },
+      null,
+      2
+    ),
+  },
+  {
+    label: 'GET /api/invoices/1 — Get purchase invoice record by ID',
+    method: 'GET',
+    path: '/api/invoices/1',
+  },
+  {
     label: 'POST /api/sales — Process POS Checkout Sale (11-step transaction)',
     method: 'POST',
     path: '/api/sales',

@@ -49,6 +49,17 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
     }
 
+    @ExceptionHandler(com.grocerypos.invoice.exception.InvalidInvoiceFileException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidInvoiceFile(com.grocerypos.invoice.exception.InvalidInvoiceFileException ex, HttpServletRequest request) {
+        ApiErrorResponse response = new ApiErrorResponse(
+                ex.getMessage(),
+                HttpStatus.BAD_REQUEST.value(),
+                request.getRequestURI(),
+                Collections.singletonList("Invoice file validation failed")
+        );
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+    }
+
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiErrorResponse> handleDataIntegrityViolation(DataIntegrityViolationException ex, HttpServletRequest request) {
         String msg = "Data integrity violation";

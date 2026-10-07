@@ -1,7 +1,11 @@
 import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
+import crypto from 'crypto';
+import multer from 'multer';
 import { fileURLToPath } from 'url';
+import { invoiceOcrService } from './src/services/InvoiceOcrService';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,7 +16,8 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: '25mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
   // CORS headers
   app.use((req, res, next) => {
@@ -89,7 +94,9 @@ async function startServer() {
           'product-management-api': 'IMPLEMENTED (CRUD REST API + Search)',
           'inventory-foundation': 'IMPLEMENTED (Inventory & InventoryTransaction entities, repositories & service)',
           'low-stock-notifications': 'IMPLEMENTED (In-App Notification entity, triggers, duplicate prevention & APIs)',
-          'invoice-ocr-tesseract': 'PLANNED (Phase 3)',
+          'invoice-upload': 'IMPLEMENTED (Secure storage, JPG/JPEG/PNG/PDF validation, status UPLOADED)',
+          'invoice-ocr-tesseract': 'IMPLEMENTED (Tesseract OCR, InvoiceOcrService, entity extraction, confidence scoring & manual review flagging)',
+          'invoice-review-confirmation': 'IMPLEMENTED (Interactive Review Screen, Edit Supplier/Number/Date/Product/SKU/Barcode/Qty/Price, Product Matching, Item Ignoring, Explicit Confirmation & Inventory Stock Update)',
           'pos-checkout': 'IMPLEMENTED (Sale & SaleItem entities, transactional checkout, stock deduction & audit)',
           'sales-reporting': 'PLANNED (Phase 5)',
           'auth-rbac': 'PLANNED (Phase 6)',
@@ -672,9 +679,9 @@ async function startServer() {
   // ==========================================
   interface NotificationRecord {
     id: number;
-    type: 'LOW_STOCK' | 'OUT_OF_STOCK';
+    type: 'LOW_STOCK' | 'OUT_OF_STOCK' | 'RESTOCK';
     message: string;
-    severity: 'WARNING' | 'CRITICAL';
+    severity: 'WARNING' | 'CRITICAL' | 'INFO';
     productId: number;
     productName: string;
     productSku: string;
@@ -1424,6 +1431,1552 @@ async function startServer() {
       timestamp: new Date().toISOString(),
     });
   });
+
+  // ==========================================
+  // Purchase Invoice Management API
+  // Requirement: Implement ONLY invoice upload.
+  // Allowed: JPG, JPEG, PNG, PDF
+  // Validate: File type, File size, File integrity
+  // Status: Initially UPLOADED
+  // Store securely
+  // Do NOT run OCR yet.
+  // Do NOT modify inventory.
+  // Do NOT automatically create products.
+  // ==========================================
+
+  const invoiceUploadsDir = path.resolve(__dirname, 'uploads', 'invoices');
+  if (!fs.existsSync(invoiceUploadsDir)) {
+    fs.mkdirSync(invoiceUploadsDir, { recursive: true });
+  }
+
+  const uploadInvoiceMiddleware = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+      fileSize: 15 * 1024 * 1024, // 15MB maximum
+    },
+  });
+
+  interface PurchaseInvoiceRecord {
+    id: number;
+    invoiceNumber: string;
+    originalFilename: string;
+    storedFilename: string;
+    filePath: string;
+    fileSize: number;
+    mimeType: string;
+    fileHash: string;
+    status: 'UPLOADED' | 'PROCESSING' | 'PROCESSED' | 'CONFIRMED' | 'FAILED';
+    uploadedBy: string;
+    notes?: string;
+    createdAt: string;
+    updatedAt: string;
+    ocrResult?: any;
+    ocrProcessedAt?: string;
+    confirmedAt?: string;
+  }
+
+  const ALLOWED_INVOICE_EXTS = ['jpg', 'jpeg', 'png', 'pdf'];
+
+  function validateInvoiceBuffer(
+    buffer: Buffer,
+    originalFilename: string,
+    mimeType?: string
+  ): {
+    valid: boolean;
+    error?: string;
+    extension: string;
+    resolvedMime: string;
+    sha256: string;
+  } {
+    if (!buffer || buffer.length === 0) {
+      return {
+        valid: false,
+        error: 'Upload rejected: File is empty (0 bytes).',
+        extension: '',
+        resolvedMime: '',
+        sha256: '',
+      };
+    }
+
+    if (buffer.length > 15 * 1024 * 1024) {
+      return {
+        valid: false,
+        error: `Upload rejected: File size (${(buffer.length / 1024 / 1024).toFixed(2)} MB) exceeds 15 MB limit.`,
+        extension: '',
+        resolvedMime: '',
+        sha256: '',
+      };
+    }
+
+    // Clean filename and extract extension
+    const cleanName = path.basename(originalFilename || 'invoice');
+    const dotIndex = cleanName.lastIndexOf('.');
+    const ext = dotIndex > 0 ? cleanName.substring(dotIndex + 1).toLowerCase() : '';
+
+    if (!ALLOWED_INVOICE_EXTS.includes(ext)) {
+      return {
+        valid: false,
+        error: `Upload rejected: Unsupported file extension '.${ext}'. Allowed formats: JPG, JPEG, PNG, PDF.`,
+        extension: '',
+        resolvedMime: '',
+        sha256: '',
+      };
+    }
+
+    // Header magic bytes check
+    if (buffer.length < 4) {
+      return {
+        valid: false,
+        error: 'Integrity check failed: File header is truncated or corrupted.',
+        extension: '',
+        resolvedMime: '',
+        sha256: '',
+      };
+    }
+
+    if (ext === 'pdf') {
+      // PDF header %PDF- (0x25, 0x50, 0x44, 0x46)
+      const isPdf = buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46;
+      if (!isPdf) {
+        return {
+          valid: false,
+          error: 'Integrity check failed: File header signature does not match valid PDF specification.',
+          extension: '',
+          resolvedMime: '',
+          sha256: '',
+        };
+      }
+    } else if (ext === 'png') {
+      // PNG header 0x89 50 4E 47
+      const isPng = buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
+      if (!isPng) {
+        return {
+          valid: false,
+          error: 'Integrity check failed: File header signature does not match valid PNG specification.',
+          extension: '',
+          resolvedMime: '',
+          sha256: '',
+        };
+      }
+    } else if (ext === 'jpg' || ext === 'jpeg') {
+      // JPEG SOI header 0xFF 0xD8 0xFF
+      const isJpg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+      if (!isJpg) {
+        return {
+          valid: false,
+          error: 'Integrity check failed: File header signature does not match valid JPEG/JPG specification.',
+          extension: '',
+          resolvedMime: '',
+          sha256: '',
+        };
+      }
+    }
+
+    let resolvedMime = mimeType || '';
+    if (!resolvedMime || resolvedMime === 'application/octet-stream') {
+      if (ext === 'pdf') resolvedMime = 'application/pdf';
+      else if (ext === 'png') resolvedMime = 'image/png';
+      else resolvedMime = 'image/jpeg';
+    }
+
+    const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+
+    return {
+      valid: true,
+      extension: ext,
+      resolvedMime,
+      sha256,
+    };
+  }
+
+  let nextInvoiceId = 1;
+  const invoicesStore: PurchaseInvoiceRecord[] = [];
+
+  interface PurchaseInvoiceItemRecord {
+    id: number;
+    purchaseInvoiceId: number;
+    invoiceNumber: string;
+    productId: number;
+    productName: string;
+    sku: string;
+    barcode: string | null;
+    quantity: number;
+    unitPrice: number;
+    totalPrice: number;
+    matchedBy: 'EXPLICIT_USER_SELECTION' | 'BARCODE' | 'SKU' | 'NAME' | 'NEW_PRODUCT_CREATED';
+    createdAt: string;
+  }
+
+  let nextPurchaseInvoiceItemId = 1;
+  const purchaseInvoiceItemsStore: PurchaseInvoiceItemRecord[] = [];
+
+  // Seed sample invoice data to demonstrate Tesseract OCR and manual review flagging
+  const sampleImagePath = path.join(invoiceUploadsDir, 'sample-valley-organics-invoice.jpg');
+  const sampleImageStats = fs.existsSync(sampleImagePath) ? fs.statSync(sampleImagePath) : null;
+
+  // 1. Processed Invoice demonstrating extraction & low-confidence review flags
+  invoicesStore.push({
+    id: nextInvoiceId++,
+    invoiceNumber: 'INV-20260928-88310',
+    originalFilename: 'sysco_metro_distributors_invoice.png',
+    storedFilename: 'sample-sysco-metro-distributors.png',
+    filePath: sampleImagePath,
+    fileSize: sampleImageStats ? sampleImageStats.size : 248192,
+    mimeType: 'image/jpeg',
+    fileHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    status: 'PROCESSED',
+    uploadedBy: 'Store Manager',
+    notes: 'Weekly fresh produce & dairy delivery from Metro distributor',
+    createdAt: new Date(Date.now() - 3600000 * 24 * 2).toISOString(),
+    updatedAt: new Date(Date.now() - 3600000 * 24).toISOString(),
+    ocrProcessedAt: new Date(Date.now() - 3600000 * 24).toISOString(),
+    ocrResult: {
+      supplier: {
+        value: 'Sysco Metro Food Distribution LLC',
+        confidence: 94,
+        flaggedForReview: false,
+      },
+      invoiceNumber: {
+        value: 'INV-20260928-88310',
+        confidence: 96,
+        flaggedForReview: false,
+      },
+      invoiceDate: {
+        value: '2026-09-28',
+        confidence: 95,
+        flaggedForReview: false,
+      },
+      total: {
+        value: 148.8,
+        confidence: 93,
+        flaggedForReview: false,
+      },
+      items: [
+        {
+          id: 'item-01',
+          productName: {
+            value: 'Organic Hass Avocados (Case 48ct)',
+            confidence: 96,
+            flaggedForReview: false,
+          },
+          sku: {
+            value: 'AVO-ORG-01',
+            confidence: 94,
+            flaggedForReview: false,
+          },
+          barcode: {
+            value: '072527273070',
+            confidence: 95,
+            flaggedForReview: false,
+          },
+          quantity: {
+            value: 2,
+            confidence: 95,
+            flaggedForReview: false,
+          },
+          unitPrice: {
+            value: 24.5,
+            confidence: 94,
+            flaggedForReview: false,
+          },
+          total: {
+            value: 49.0,
+            confidence: 95,
+            flaggedForReview: false,
+          },
+          confidence: 95,
+          flaggedForReview: false,
+          reviewReasons: [],
+        },
+        {
+          id: 'item-02',
+          productName: {
+            value: 'Whole Fresh Organic Milk 1 Gal',
+            confidence: 94,
+            flaggedForReview: false,
+          },
+          sku: {
+            value: 'MLK-ORG-02',
+            confidence: 95,
+            flaggedForReview: false,
+          },
+          barcode: {
+            value: '011110417004',
+            confidence: 94,
+            flaggedForReview: false,
+          },
+          quantity: {
+            value: 15,
+            confidence: 95,
+            flaggedForReview: false,
+          },
+          unitPrice: {
+            value: 3.8,
+            confidence: 93,
+            flaggedForReview: false,
+          },
+          total: {
+            value: 57.0,
+            confidence: 94,
+            flaggedForReview: false,
+          },
+          confidence: 94,
+          flaggedForReview: false,
+          reviewReasons: [],
+        },
+        {
+          id: 'item-03',
+          productName: {
+            value: 'Honeycrisp Apples (Bag 3lb)',
+            confidence: 92,
+            flaggedForReview: false,
+          },
+          sku: {
+            value: 'APP-HON-05',
+            confidence: 92,
+            flaggedForReview: false,
+          },
+          barcode: {
+            value: '033383112001',
+            confidence: 91,
+            flaggedForReview: false,
+          },
+          quantity: {
+            value: 10,
+            confidence: 94,
+            flaggedForReview: false,
+          },
+          unitPrice: {
+            value: 4.28,
+            confidence: 90,
+            flaggedForReview: false,
+          },
+          total: {
+            value: 42.8,
+            confidence: 92,
+            flaggedForReview: false,
+          },
+          confidence: 92,
+          flaggedForReview: false,
+          reviewReasons: [],
+        },
+        {
+          id: 'item-04',
+          productName: {
+            value: 'Bulk Unlabeled Cilantro (Smudged scan)',
+            confidence: 62,
+            flaggedForReview: true,
+            reason: 'Low OCR confidence (62%) on handwritten product line',
+          },
+          sku: {
+            value: 'SKU-UNRESOLVED',
+            confidence: 45,
+            flaggedForReview: true,
+            reason: 'SKU could not be parsed from scan',
+          },
+          barcode: {
+            value: 'Missing / Illegible',
+            confidence: 40,
+            flaggedForReview: true,
+            reason: 'Barcode not detected on document',
+          },
+          quantity: {
+            value: 1,
+            confidence: 65,
+            flaggedForReview: true,
+          },
+          unitPrice: {
+            value: 5.0,
+            confidence: 60,
+            flaggedForReview: true,
+          },
+          total: {
+            value: 12.0,
+            confidence: 58,
+            flaggedForReview: true,
+            reason: 'Arithmetic discrepancy: Qty (1) × Unit Price ($5.00) ≠ Line Total ($12.00)',
+          },
+          confidence: 55,
+          flaggedForReview: true,
+          reviewReasons: [
+            'Low OCR confidence (62%) on product name',
+            'SKU missing on scanned line item',
+            'Barcode not detected on invoice',
+            'Arithmetic discrepancy: 1 × $5.00 ($5.00) does not equal $12.00',
+          ],
+        },
+      ],
+      overallConfidence: 84,
+      hasLowConfidenceValues: true,
+      manualReviewRequired: true,
+      ocrEngine: 'Tesseract OCR (open-source v5)',
+      processedAt: new Date(Date.now() - 3600000 * 24).toISOString(),
+      rawText:
+        'SYSCO METRO FOOD DISTRIBUTION LLC\nInvoice #: INV-20260928-88310\nDate: 2026-09-28\n\nOrganic Hass Avocados (Case 48ct) | SKU: AVO-ORG-01 | UPC: 072527273070 | Qty: 2 | Unit: 24.50 | Total: 49.00\nWhole Fresh Organic Milk 1 Gal | SKU: MLK-ORG-02 | UPC: 011110417004 | Qty: 15 | Unit: 3.80 | Total: 57.00\nHoneycrisp Apples (Bag 3lb) | SKU: APP-HON-05 | UPC: 033383112001 | Qty: 10 | Unit: 4.28 | Total: 42.80\nBulk Unlabeled Cilantro | Qty: 1 | Unit: 5.00 | Total: 12.00\n\nGrand Total: $148.80',
+      flaggedFieldsCount: 4,
+      inventoryUpdated: false,
+      automaticallyConfirmed: false,
+    },
+  });
+
+  // 2. Uploaded invoice ready for 1-click live Tesseract OCR execution
+  if (fs.existsSync(sampleImagePath)) {
+    invoicesStore.push({
+      id: nextInvoiceId++,
+      invoiceNumber: 'INV-20261005-94812',
+      originalFilename: 'green_valley_organics_oct5.jpg',
+      storedFilename: 'sample-valley-organics-invoice.jpg',
+      filePath: sampleImagePath,
+      fileSize: sampleImageStats ? sampleImageStats.size : 312480,
+      mimeType: 'image/jpeg',
+      fileHash: 'a1b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef0',
+      status: 'UPLOADED',
+      uploadedBy: 'Admin / Owner',
+      notes: 'Scanned paper invoice from Green Valley Organics — Ready for Tesseract OCR extraction',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  // POST /api/invoices/upload
+  // Accepts multipart file or base64 JSON payload
+  app.post('/api/invoices/upload', uploadInvoiceMiddleware.single('file'), (req: Request, res: Response) => {
+    let fileBuffer: Buffer | null = null;
+    let originalFilename = '';
+    let mimeType = '';
+    let notes = (req.body?.notes as string) || '';
+    let uploadedBy = (req.body?.uploadedBy as string) || 'Admin / Owner';
+
+    if (req.file) {
+      fileBuffer = req.file.buffer;
+      originalFilename = req.file.originalname;
+      mimeType = req.file.mimetype;
+    } else if (req.body?.base64Data && req.body?.filename) {
+      originalFilename = req.body.filename;
+      mimeType = req.body.mimeType || '';
+      try {
+        const cleanBase64 = req.body.base64Data.replace(/^data:.*?;base64,/, '');
+        fileBuffer = Buffer.from(cleanBase64, 'base64');
+      } catch {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid base64 encoded data provided for invoice file.',
+          status: 400,
+          path: req.originalUrl,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+    }
+
+    if (!fileBuffer || !originalFilename) {
+      res.status(400).json({
+        success: false,
+        error: 'No invoice file uploaded. Please provide a JPG, JPEG, PNG, or PDF file.',
+        status: 400,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // Validate type, size, and integrity
+    const validation = validateInvoiceBuffer(fileBuffer, originalFilename, mimeType);
+    if (!validation.valid) {
+      res.status(400).json({
+        success: false,
+        error: validation.error,
+        status: 400,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // Securely write file to disk with unique UUID filename to prevent collisions & path traversal
+    const safeStoredFilename = `${crypto.randomUUID()}.${validation.extension}`;
+    const secureFilePath = path.join(invoiceUploadsDir, safeStoredFilename);
+
+    try {
+      fs.writeFileSync(secureFilePath, fileBuffer);
+    } catch (err: any) {
+      res.status(500).json({
+        success: false,
+        error: `Failed to securely write invoice to disk: ${err.message}`,
+        status: 500,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // Generate formatted invoice tracking number
+    const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const shortRef = crypto.randomUUID().substring(0, 8).toUpperCase();
+    const invoiceNumber = `INV-${todayStr}-${shortRef}`;
+
+    // Create PurchaseInvoice record with initial status UPLOADED
+    // STRICT ADHERENCE:
+    // Do NOT run OCR yet.
+    // Do NOT modify inventory.
+    // Do NOT automatically create products.
+    const newInvoice: PurchaseInvoiceRecord = {
+      id: nextInvoiceId++,
+      invoiceNumber,
+      originalFilename: path.basename(originalFilename),
+      storedFilename: safeStoredFilename,
+      filePath: secureFilePath,
+      fileSize: fileBuffer.length,
+      mimeType: validation.resolvedMime,
+      fileHash: validation.sha256,
+      status: 'UPLOADED',
+      uploadedBy,
+      notes,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    invoicesStore.unshift(newInvoice);
+
+    res.status(201).json({
+      success: true,
+      message: 'Invoice uploaded and verified successfully. Status: UPLOADED',
+      data: newInvoice,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // GET /api/invoices - List all purchase invoices
+  app.get('/api/invoices', (req: Request, res: Response) => {
+    res.json({
+      success: true,
+      message: 'Purchase invoices retrieved successfully',
+      data: invoicesStore,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // GET /api/invoices/:id - Retrieve single invoice
+  app.get('/api/invoices/:id([0-9]+)', (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const invoice = invoicesStore.find((inv) => inv.id === id);
+
+    if (!invoice) {
+      res.status(404).json({
+        success: false,
+        error: `Purchase invoice not found with ID: ${id}`,
+        status: 404,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      message: 'Invoice retrieved successfully',
+      data: invoice,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // GET /api/invoices/:id/download or /file - Stream stored invoice file
+  app.get(['/api/invoices/:id([0-9]+)/download', '/api/invoices/:id([0-9]+)/file'], (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const invoice = invoicesStore.find((inv) => inv.id === id);
+
+    if (!invoice) {
+      res.status(404).json({
+        success: false,
+        error: `Purchase invoice not found with ID: ${id}`,
+        status: 404,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    if (!fs.existsSync(invoice.filePath)) {
+      res.status(404).json({
+        success: false,
+        error: `Invoice physical file not found on disk: ${invoice.storedFilename}`,
+        status: 404,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    res.setHeader('Content-Type', invoice.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${invoice.originalFilename}"`);
+    fs.createReadStream(invoice.filePath).pipe(res);
+  });
+
+  // DELETE /api/invoices/:id - Delete invoice
+  app.delete('/api/invoices/:id([0-9]+)', (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const index = invoicesStore.findIndex((inv) => inv.id === id);
+
+    if (index === -1) {
+      res.status(404).json({
+        success: false,
+        error: `Purchase invoice not found with ID: ${id}`,
+        status: 404,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const removed = invoicesStore.splice(index, 1)[0];
+    if (fs.existsSync(removed.filePath)) {
+      try {
+        fs.unlinkSync(removed.filePath);
+      } catch (e) {
+        console.warn(`Could not delete file ${removed.filePath}:`, e);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Invoice ${removed.invoiceNumber} deleted successfully`,
+      data: removed,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // ==========================================
+  // Purchase Invoice OCR Processing API
+  // Requirement: Implement ONLY OCR processing for uploaded invoices.
+  // Engine: Free/open-source Tesseract OCR (InvoiceOcrService)
+  // Extracts: Supplier, Invoice number, Invoice date, Product name, SKU, Barcode, Quantity, Unit price, Total
+  // Flags: Low-confidence values (<75% or arithmetic discrepancies) flagged for manual review
+  // STRICT RULES:
+  // - Store extracted data
+  // - Do NOT update inventory
+  // - Do NOT automatically confirm invoice
+  // ==========================================
+
+  // POST /api/invoices/:id/ocr - Execute Tesseract OCR on uploaded invoice
+  app.post('/api/invoices/:id([0-9]+)/ocr', async (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const invoice = invoicesStore.find((inv) => inv.id === id);
+
+    if (!invoice) {
+      res.status(404).json({
+        success: false,
+        error: `Purchase invoice not found with ID: ${id}`,
+        status: 404,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    if (!fs.existsSync(invoice.filePath)) {
+      res.status(404).json({
+        success: false,
+        error: `Invoice physical file not found on disk: ${invoice.storedFilename}`,
+        status: 404,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    try {
+      invoice.status = 'PROCESSING';
+      invoice.updatedAt = new Date().toISOString();
+
+      console.log(`[InvoiceOcrService] Starting Tesseract OCR for Invoice ${invoice.invoiceNumber} (${invoice.originalFilename})...`);
+
+      const ocrResult = await invoiceOcrService.processInvoice(invoice.filePath, {
+        originalFilename: invoice.originalFilename,
+        mimeType: invoice.mimeType,
+      });
+
+      // Store extracted data onto the invoice
+      invoice.ocrResult = ocrResult;
+      invoice.status = 'PROCESSED';
+      invoice.ocrProcessedAt = ocrResult.processedAt;
+      invoice.updatedAt = new Date().toISOString();
+
+      console.log(`[InvoiceOcrService] OCR completed for ${invoice.invoiceNumber}. Extracted ${ocrResult.items.length} items. Low confidence flagged: ${ocrResult.hasLowConfidenceValues}`);
+
+      // STRICT RULES CONFIRMATION:
+      // Do NOT update inventory
+      // Do NOT automatically confirm invoice
+      res.json({
+        success: true,
+        message: 'Tesseract OCR completed successfully. Extracted data stored. Low-confidence values flagged for manual review.',
+        data: ocrResult,
+        invoice,
+        safeguards: {
+          inventoryUpdated: false,
+          automaticallyConfirmed: false,
+          requiresManualReview: ocrResult.manualReviewRequired,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      console.error(`[InvoiceOcrService] OCR failed for ${invoice.invoiceNumber}:`, err);
+      invoice.status = 'FAILED';
+      invoice.updatedAt = new Date().toISOString();
+
+      res.status(500).json({
+        success: false,
+        error: `OCR processing failed: ${err?.message || 'Unknown OCR error'}`,
+        status: 500,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
+  // GET /api/invoices/:id/ocr - Retrieve OCR extracted data and review flags
+  app.get('/api/invoices/:id([0-9]+)/ocr', (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const invoice = invoicesStore.find((inv) => inv.id === id);
+
+    if (!invoice) {
+      res.status(404).json({
+        success: false,
+        error: `Purchase invoice not found with ID: ${id}`,
+        status: 404,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    if (!invoice.ocrResult) {
+      res.status(404).json({
+        success: false,
+        error: `OCR has not been executed yet for invoice ${invoice.invoiceNumber}. Current status: ${invoice.status}`,
+        status: 404,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      message: 'OCR extracted data retrieved successfully',
+      data: invoice.ocrResult,
+      invoice,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // PUT /api/invoices/:id/review - Save edited invoice review data
+  // Requirement: Allow editing supplier, invoice number, date, product, SKU, barcode, quantity, price, matching product, ignoring item.
+  // STRICT SAFEGUARD:
+  // Inventory must NOT change until the invoice is explicitly confirmed.
+  // This endpoint only persists the review draft.
+  app.put('/api/invoices/:id([0-9]+)/review', (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const invoice = invoicesStore.find((inv) => inv.id === id);
+
+    if (!invoice) {
+      res.status(404).json({
+        success: false,
+        error: `Purchase invoice not found with ID: ${id}`,
+        status: 404,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    if (!invoice.ocrResult) {
+      res.status(400).json({
+        success: false,
+        error: `Invoice ${invoice.invoiceNumber} has no OCR results to review.`,
+        status: 400,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const { supplier, invoiceNumber, invoiceDate, total, items, notes } = req.body;
+
+    // Update Header Fields
+    if (typeof supplier === 'string' && supplier.trim()) {
+      invoice.ocrResult.supplier.value = supplier.trim();
+      invoice.ocrResult.supplier.userEdited = true;
+      invoice.ocrResult.supplier.flaggedForReview = false;
+    }
+
+    if (typeof invoiceNumber === 'string' && invoiceNumber.trim()) {
+      invoice.invoiceNumber = invoiceNumber.trim();
+      invoice.ocrResult.invoiceNumber.value = invoiceNumber.trim();
+      invoice.ocrResult.invoiceNumber.userEdited = true;
+      invoice.ocrResult.invoiceNumber.flaggedForReview = false;
+    }
+
+    if (typeof invoiceDate === 'string' && invoiceDate.trim()) {
+      invoice.ocrResult.invoiceDate.value = invoiceDate.trim();
+      invoice.ocrResult.invoiceDate.userEdited = true;
+      invoice.ocrResult.invoiceDate.flaggedForReview = false;
+    }
+
+    if (typeof notes === 'string') {
+      invoice.notes = notes;
+    }
+
+    // Update Line Items
+    if (Array.isArray(items)) {
+      const existingItemsMap = new Map(invoice.ocrResult.items.map((it: any) => [it.id, it]));
+
+      invoice.ocrResult.items = items.map((it: any, index: number) => {
+        const existing: any = existingItemsMap.get(it.id) || {};
+
+        const productNameVal = it.productName !== undefined ? String(it.productName).trim() : existing.productName?.value || '';
+        const skuVal = it.sku !== undefined ? String(it.sku).trim() : existing.sku?.value || '';
+        const barcodeVal = it.barcode !== undefined ? String(it.barcode).trim() : existing.barcode?.value || '';
+        const quantityVal = it.quantity !== undefined ? Math.max(0, Number(it.quantity)) : existing.quantity?.value || 1;
+        const unitPriceVal = it.unitPrice !== undefined ? Math.max(0, Number(it.unitPrice)) : existing.unitPrice?.value || 0;
+        const totalVal = it.total !== undefined ? Number(it.total) : Number((quantityVal * unitPriceVal).toFixed(2));
+
+        const isIgnored = Boolean(it.ignored);
+        const matchedPid = it.matchedProductId !== undefined ? (it.matchedProductId ? Number(it.matchedProductId) : null) : existing.matchedProductId ?? null;
+        const matchedPName = it.matchedProductName !== undefined ? it.matchedProductName : existing.matchedProductName ?? null;
+        const matchedPSku = it.matchedProductSku !== undefined ? it.matchedProductSku : existing.matchedProductSku ?? null;
+
+        return {
+          id: it.id || existing.id || `item-${index + 1}`,
+          productName: {
+            value: productNameVal,
+            confidence: existing.productName?.confidence ?? 100,
+            flaggedForReview: false,
+            originalValue: existing.productName?.originalValue ?? existing.productName?.value,
+            userEdited: it.productName !== undefined ? true : existing.productName?.userEdited,
+          },
+          sku: {
+            value: skuVal,
+            confidence: existing.sku?.confidence ?? 100,
+            flaggedForReview: false,
+            originalValue: existing.sku?.originalValue ?? existing.sku?.value,
+            userEdited: it.sku !== undefined ? true : existing.sku?.userEdited,
+          },
+          barcode: {
+            value: barcodeVal,
+            confidence: existing.barcode?.confidence ?? 100,
+            flaggedForReview: false,
+            originalValue: existing.barcode?.originalValue ?? existing.barcode?.value,
+            userEdited: it.barcode !== undefined ? true : existing.barcode?.userEdited,
+          },
+          quantity: {
+            value: quantityVal,
+            confidence: existing.quantity?.confidence ?? 100,
+            flaggedForReview: false,
+            originalValue: existing.quantity?.originalValue ?? existing.quantity?.value,
+            userEdited: it.quantity !== undefined ? true : existing.quantity?.userEdited,
+          },
+          unitPrice: {
+            value: unitPriceVal,
+            confidence: existing.unitPrice?.confidence ?? 100,
+            flaggedForReview: false,
+            originalValue: existing.unitPrice?.originalValue ?? existing.unitPrice?.value,
+            userEdited: it.unitPrice !== undefined ? true : existing.unitPrice?.userEdited,
+          },
+          total: {
+            value: totalVal,
+            confidence: existing.total?.confidence ?? 100,
+            flaggedForReview: false,
+            originalValue: existing.total?.originalValue ?? existing.total?.value,
+            userEdited: it.total !== undefined ? true : existing.total?.userEdited,
+          },
+          confidence: existing.confidence ?? 100,
+          flaggedForReview: false,
+          reviewReasons: [],
+          matchedProductId: matchedPid,
+          matchedProductName: matchedPName,
+          matchedProductSku: matchedPSku,
+          ignored: isIgnored,
+          userModified: true,
+        };
+      });
+
+      // Recalculate grand total from non-ignored items
+      const sumActive = invoice.ocrResult.items
+        .filter((it: any) => !it.ignored)
+        .reduce((sum: number, it: any) => sum + it.total.value, 0);
+
+      invoice.ocrResult.total.value = total !== undefined ? Number(total) : Number(sumActive.toFixed(2));
+      invoice.ocrResult.total.userEdited = true;
+      invoice.ocrResult.total.flaggedForReview = false;
+    }
+
+    // Update review summary counters
+    const activeItems = invoice.ocrResult.items.filter((it: any) => !it.ignored);
+    const flaggedItems = activeItems.filter((it: any) => it.flaggedForReview);
+    invoice.ocrResult.hasLowConfidenceValues = flaggedItems.length > 0;
+    invoice.ocrResult.manualReviewRequired = flaggedItems.length > 0;
+    invoice.ocrResult.flaggedFieldsCount = flaggedItems.length;
+
+    // Strict Safeguards:
+    invoice.ocrResult.inventoryUpdated = false;
+    invoice.ocrResult.automaticallyConfirmed = false;
+    invoice.updatedAt = new Date().toISOString();
+
+    res.json({
+      success: true,
+      message: 'Invoice review draft saved successfully. Inventory remains completely untouched.',
+      data: invoice,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // GET /api/invoices/:id/items - Retrieve confirmed purchase invoice line items
+  app.get('/api/invoices/:id([0-9]+)/items', (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const invoice = invoicesStore.find((inv) => inv.id === id);
+
+    if (!invoice) {
+      res.status(404).json({
+        success: false,
+        error: `Purchase invoice not found with ID: ${id}`,
+        status: 404,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const items = purchaseInvoiceItemsStore.filter((it) => it.purchaseInvoiceId === id);
+
+    res.json({
+      success: true,
+      message: `Retrieved ${items.length} confirmed invoice items for invoice #${invoice.invoiceNumber}`,
+      data: items,
+      invoiceNumber: invoice.invoiceNumber,
+      invoiceStatus: invoice.status,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // POST /api/invoices/:id/confirm - Explicitly confirm invoice with atomic database transaction
+  // Implements the 10-step confirmation sequence:
+  // 1. Validate invoice.
+  // 2. Validate invoice items.
+  // 3. Match each item to a product.
+  // 4. Require user confirmation for uncertain matches.
+  // 5. Create purchase invoice.
+  // 6. Create invoice items.
+  // 7. Increase inventory.
+  // 8. Create PURCHASE inventory transactions.
+  // 9. Recalculate stock status.
+  // 10. Trigger notification logic.
+  //
+  // Use a database transaction.
+  // If any operation fails, roll back the entire operation.
+  // Never silently create duplicate products.
+  app.post('/api/invoices/:id([0-9]+)/confirm', (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+
+    // =========================================================================
+    // DATABASE TRANSACTION SNAPSHOT (Atomic rollback safeguard)
+    // =========================================================================
+    const transactionSnapshot = {
+      productsStore: JSON.parse(JSON.stringify(productsStore)),
+      inventoryEntries: JSON.parse(JSON.stringify(Array.from(inventoryStore.entries()))),
+      inventoryTransactionsStore: JSON.parse(JSON.stringify(inventoryTransactionsStore)),
+      invoicesStore: JSON.parse(JSON.stringify(invoicesStore)),
+      purchaseInvoiceItemsStore: JSON.parse(JSON.stringify(purchaseInvoiceItemsStore)),
+      notificationsStore: JSON.parse(JSON.stringify(notificationsStore)),
+      nextProductId,
+      nextInvId,
+      nextTxId,
+      nextNotificationId,
+      nextPurchaseInvoiceItemId,
+    };
+
+    const rollbackTransaction = (
+      reason: string,
+      failedStepNumber: number,
+      failedStepName: string,
+      httpStatus: number = 422,
+      extraDetails?: any
+    ) => {
+      console.warn(
+        `[DB TRANSACTION ROLLBACK] Confirmation aborted at Step ${failedStepNumber} (${failedStepName}): ${reason}`
+      );
+
+      // Revert all stores to pristine pre-transaction state
+      productsStore.length = 0;
+      productsStore.push(...transactionSnapshot.productsStore);
+
+      inventoryStore.clear();
+      transactionSnapshot.inventoryEntries.forEach(([k, v]: [number, any]) => inventoryStore.set(k, v));
+
+      inventoryTransactionsStore.length = 0;
+      inventoryTransactionsStore.push(...transactionSnapshot.inventoryTransactionsStore);
+
+      invoicesStore.length = 0;
+      invoicesStore.push(...transactionSnapshot.invoicesStore);
+
+      purchaseInvoiceItemsStore.length = 0;
+      purchaseInvoiceItemsStore.push(...transactionSnapshot.purchaseInvoiceItemsStore);
+
+      notificationsStore.length = 0;
+      notificationsStore.push(...transactionSnapshot.notificationsStore);
+
+      nextProductId = transactionSnapshot.nextProductId;
+      nextInvId = transactionSnapshot.nextInvId;
+      nextTxId = transactionSnapshot.nextTxId;
+      nextNotificationId = transactionSnapshot.nextNotificationId;
+      nextPurchaseInvoiceItemId = transactionSnapshot.nextPurchaseInvoiceItemId;
+
+      res.status(httpStatus).json({
+        success: false,
+        error: reason,
+        transactionStatus: 'ROLLED_BACK',
+        failedStep: {
+          stepNumber: failedStepNumber,
+          stepName: failedStepName,
+        },
+        details: extraDetails || null,
+        path: req.originalUrl,
+        timestamp: new Date().toISOString(),
+      });
+    };
+
+    try {
+      // -----------------------------------------------------------------------
+      // STEP 1: VALIDATE INVOICE
+      // -----------------------------------------------------------------------
+      const invoice = invoicesStore.find((inv) => inv.id === id);
+      if (!invoice) {
+        return rollbackTransaction(`Purchase invoice not found with ID: ${id}`, 1, 'Validate invoice', 404);
+      }
+
+      if (invoice.status === 'CONFIRMED') {
+        return rollbackTransaction(
+          `Invoice ${invoice.invoiceNumber} has already been confirmed on ${invoice.confirmedAt}. Duplicate confirmation is forbidden.`,
+          1,
+          'Validate invoice',
+          400
+        );
+      }
+
+      if (!invoice.ocrResult || !Array.isArray(invoice.ocrResult.items)) {
+        return rollbackTransaction(
+          `Invoice ${invoice.invoiceNumber} does not contain OCR extracted review data to confirm.`,
+          1,
+          'Validate invoice',
+          400
+        );
+      }
+
+      const supplierName = invoice.ocrResult.supplier?.value?.trim();
+      if (!supplierName) {
+        return rollbackTransaction('Invoice supplier name cannot be empty.', 1, 'Validate invoice', 422);
+      }
+
+      const invNumber = (invoice.invoiceNumber || invoice.ocrResult.invoiceNumber?.value)?.trim();
+      if (!invNumber) {
+        return rollbackTransaction('Invoice tracking number cannot be empty.', 1, 'Validate invoice', 422);
+      }
+
+      const invoiceDate = invoice.ocrResult.invoiceDate?.value?.trim();
+      if (!invoiceDate) {
+        return rollbackTransaction('Invoice date is required and cannot be empty.', 1, 'Validate invoice', 422);
+      }
+
+      // Check duplicate invoice number among other already confirmed invoices
+      const isDuplicateConfirmedNum = invoicesStore.some(
+        (inv) => inv.id !== invoice.id && inv.status === 'CONFIRMED' && inv.invoiceNumber.toLowerCase() === invNumber.toLowerCase()
+      );
+      if (isDuplicateConfirmedNum) {
+        return rollbackTransaction(
+          `A purchase invoice with number '${invNumber}' is already confirmed in the ledger. Duplicate invoice numbers are forbidden.`,
+          1,
+          'Validate invoice',
+          409
+        );
+      }
+
+      // Optional failure simulation parameter to verify transactional rollback
+      if (req.body?.simulateFailure === true) {
+        throw new Error('Simulated database deadlock/failure triggered by client. Verifying transaction rollback.');
+      }
+
+      // -----------------------------------------------------------------------
+      // STEP 2: VALIDATE INVOICE ITEMS
+      // -----------------------------------------------------------------------
+      const allItems = invoice.ocrResult.items;
+      const activeItems = allItems.filter((it: any) => !it.ignored);
+
+      if (activeItems.length === 0) {
+        return rollbackTransaction(
+          'Invoice confirmation rejected: Invoice contains 0 active items. At least one line item must not be ignored.',
+          2,
+          'Validate invoice items',
+          422
+        );
+      }
+
+      for (let i = 0; i < activeItems.length; i++) {
+        const item = activeItems[i];
+        const pName = item.productName?.value?.trim();
+        if (!pName) {
+          return rollbackTransaction(
+            `Line item #${i + 1} (${item.id}) is missing a valid product name.`,
+            2,
+            'Validate invoice items',
+            422
+          );
+        }
+
+        const qty = Number(item.quantity?.value);
+        if (isNaN(qty) || qty <= 0) {
+          return rollbackTransaction(
+            `Line item '${pName}' has invalid quantity '${item.quantity?.value}'. Quantity must be a positive number greater than 0.`,
+            2,
+            'Validate invoice items',
+            422
+          );
+        }
+
+        const price = Number(item.unitPrice?.value);
+        if (isNaN(price) || price < 0) {
+          return rollbackTransaction(
+            `Line item '${pName}' has invalid unit price '${item.unitPrice?.value}'. Unit price must be non-negative.`,
+            2,
+            'Validate invoice items',
+            422
+          );
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // STEP 3: MATCH EACH ITEM TO A PRODUCT
+      // -----------------------------------------------------------------------
+      interface ItemMatchOutcome {
+        item: any;
+        matchedProduct: ProductRecord | null;
+        matchedBy: 'EXPLICIT_USER_SELECTION' | 'BARCODE' | 'SKU' | 'NAME' | 'NEW_PRODUCT_CREATED';
+        isCertain: boolean;
+        certaintyScore: number;
+        reason?: string;
+      }
+
+      const matchOutcomes: ItemMatchOutcome[] = [];
+
+      for (const item of activeItems) {
+        let matchedProduct: ProductRecord | null = null;
+        let matchedBy: ItemMatchOutcome['matchedBy'] = 'NEW_PRODUCT_CREATED';
+        let isCertain = true;
+        let certaintyScore = 100;
+        let reason = 'High confidence exact match';
+
+        // 3a. Explicit user selection
+        if (item.matchedProductId) {
+          const found = productsStore.find((p) => p.id === Number(item.matchedProductId));
+          if (found) {
+            matchedProduct = found;
+            matchedBy = 'EXPLICIT_USER_SELECTION';
+            isCertain = true;
+            certaintyScore = 100;
+            reason = 'Explicitly matched by user';
+          } else {
+            return rollbackTransaction(
+              `Matched product ID ${item.matchedProductId} specified for '${item.productName.value}' does not exist in catalog.`,
+              3,
+              'Match each item to a product',
+              422
+            );
+          }
+        }
+
+        // 3b. Match by Barcode
+        if (!matchedProduct && item.barcode?.value && item.barcode.value !== 'Not detected' && item.barcode.value !== 'Missing / Illegible') {
+          const found = productsStore.find((p) => p.barcode === item.barcode.value.trim());
+          if (found) {
+            matchedProduct = found;
+            matchedBy = 'BARCODE';
+            const barcodeConfidence = item.barcode?.confidence ?? 100;
+            if (barcodeConfidence < 75) {
+              isCertain = false;
+              certaintyScore = barcodeConfidence;
+              reason = `Low OCR confidence (${barcodeConfidence}%) on barcode`;
+            } else {
+              isCertain = true;
+              certaintyScore = barcodeConfidence;
+            }
+          }
+        }
+
+        // 3c. Match by SKU
+        if (!matchedProduct && item.sku?.value && item.sku.value !== 'Missing' && item.sku.value !== 'SKU-UNRESOLVED') {
+          const found = productsStore.find((p) => p.sku.toLowerCase() === item.sku.value.trim().toLowerCase());
+          if (found) {
+            matchedProduct = found;
+            matchedBy = 'SKU';
+            const skuConfidence = item.sku?.confidence ?? 100;
+            if (skuConfidence < 75) {
+              isCertain = false;
+              certaintyScore = skuConfidence;
+              reason = `Low OCR confidence (${skuConfidence}%) on SKU`;
+            } else {
+              isCertain = true;
+              certaintyScore = skuConfidence;
+            }
+          }
+        }
+
+        // 3d. Match by Product Name
+        if (!matchedProduct && item.productName?.value) {
+          const cleanName = item.productName.value.toLowerCase().trim();
+          // Exact name match
+          const foundExact = productsStore.find((p) => p.name.toLowerCase().trim() === cleanName);
+          if (foundExact) {
+            matchedProduct = foundExact;
+            matchedBy = 'NAME';
+            const nameConfidence = item.productName?.confidence ?? 100;
+            if (nameConfidence < 75) {
+              isCertain = false;
+              certaintyScore = nameConfidence;
+              reason = `Low OCR confidence (${nameConfidence}%) on product name`;
+            } else {
+              isCertain = true;
+              certaintyScore = nameConfidence;
+            }
+          } else {
+            // Fuzzy / partial name match
+            const foundFuzzy = productsStore.find(
+              (p) =>
+                p.name.toLowerCase().includes(cleanName) ||
+                cleanName.includes(p.name.toLowerCase()) ||
+                (cleanName.length > 5 && p.name.toLowerCase().slice(0, 5) === cleanName.slice(0, 5))
+            );
+            if (foundFuzzy) {
+              matchedProduct = foundFuzzy;
+              matchedBy = 'NAME';
+              isCertain = false; // Fuzzy name matching is uncertain!
+              certaintyScore = 65;
+              reason = `Fuzzy name resemblance to catalog product '${foundFuzzy.name}'`;
+            }
+          }
+        }
+
+        // 3e. Product not found in catalog: Candidate for creating new product
+        if (!matchedProduct) {
+          // RULE: Never silently create duplicate products!
+          // Inspect if an existing product already shares this barcode or SKU
+          const candidateBarcode =
+            item.barcode?.value && item.barcode.value !== 'Not detected' && item.barcode.value !== 'Missing / Illegible'
+              ? item.barcode.value.trim()
+              : null;
+          const candidateSku =
+            item.sku?.value && item.sku.value !== 'Missing' && item.sku.value !== 'SKU-UNRESOLVED'
+              ? item.sku.value.trim()
+              : null;
+
+          if (candidateBarcode) {
+            const conflictBarcode = productsStore.find((p) => p.barcode === candidateBarcode);
+            if (conflictBarcode) {
+              return rollbackTransaction(
+                `Duplicate conflict: Product '${item.productName.value}' has barcode '${candidateBarcode}' which already belongs to '${conflictBarcode.name}' (SKU: ${conflictBarcode.sku}). Never silently create duplicate products.`,
+                3,
+                'Match each item to a product',
+                409,
+                { conflictingProduct: conflictBarcode }
+              );
+            }
+          }
+
+          if (candidateSku) {
+            const conflictSku = productsStore.find((p) => p.sku.toLowerCase() === candidateSku.toLowerCase());
+            if (conflictSku) {
+              return rollbackTransaction(
+                `Duplicate conflict: Product '${item.productName.value}' has SKU '${candidateSku}' which already belongs to '${conflictSku.name}'. Never silently create duplicate products.`,
+                3,
+                'Match each item to a product',
+                409,
+                { conflictingProduct: conflictSku }
+              );
+            }
+          }
+
+          matchedProduct = null;
+          matchedBy = 'NEW_PRODUCT_CREATED';
+          isCertain = false; // Unmatched items require explicit user approval
+          certaintyScore = 50;
+          reason = 'Unmatched item: Will be cataloged as a brand new product';
+        }
+
+        // Low OCR overall confidence also makes match uncertain
+        if (item.confidence < 75 || item.flaggedForReview) {
+          isCertain = false;
+          if (certaintyScore > item.confidence) certaintyScore = item.confidence;
+        }
+
+        matchOutcomes.push({
+          item,
+          matchedProduct,
+          matchedBy,
+          isCertain,
+          certaintyScore,
+          reason,
+        });
+      }
+
+      // -----------------------------------------------------------------------
+      // STEP 4: REQUIRE USER CONFIRMATION FOR UNCERTAIN MATCHES
+      // -----------------------------------------------------------------------
+      const uncertainMatches = matchOutcomes.filter((m) => !m.isCertain);
+
+      if (uncertainMatches.length > 0) {
+        const userExplicitlyConfirmed =
+          req.body?.confirmedUncertainMatches === true ||
+          uncertainMatches.every((u) => Boolean(u.item.uncertainMatchConfirmed));
+
+        if (!userExplicitlyConfirmed) {
+          return rollbackTransaction(
+            `Confirmation blocked: Invoice contains ${uncertainMatches.length} uncertain product match(es) or new product candidate(s) that require explicit user verification.`,
+            4,
+            'Require user confirmation for uncertain matches',
+            422,
+            {
+              uncertainMatchesCount: uncertainMatches.length,
+              uncertainItems: uncertainMatches.map((u) => ({
+                itemId: u.item.id,
+                productName: u.item.productName?.value,
+                sku: u.item.sku?.value,
+                barcode: u.item.barcode?.value,
+                matchedProductId: u.matchedProduct?.id ?? null,
+                matchedProductName: u.matchedProduct?.name ?? null,
+                matchedBy: u.matchedBy,
+                confidence: u.certaintyScore,
+                reason: u.reason,
+              })),
+            }
+          );
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // STEP 5: CREATE PURCHASE INVOICE
+      // -----------------------------------------------------------------------
+      const confirmedTimestamp = new Date().toISOString();
+      const confirmedBy = req.body?.confirmedBy || invoice.uploadedBy || 'Store Admin';
+
+      invoice.status = 'CONFIRMED';
+      invoice.confirmedAt = confirmedTimestamp;
+      invoice.updatedAt = confirmedTimestamp;
+      invoice.ocrResult.inventoryUpdated = true;
+      invoice.ocrResult.automaticallyConfirmed = false;
+      invoice.ocrResult.confirmedAt = confirmedTimestamp;
+      invoice.ocrResult.confirmedBy = confirmedBy;
+
+      // Grand total calculated from active confirmed items
+      const grandTotal = activeItems.reduce(
+        (sum: number, it: any) => sum + (Number(it.quantity?.value) || 0) * (Number(it.unitPrice?.value) || 0),
+        0
+      );
+      invoice.ocrResult.total.value = Number(grandTotal.toFixed(2));
+
+      // -----------------------------------------------------------------------
+      // STEP 6: CREATE INVOICE ITEMS
+      // -----------------------------------------------------------------------
+      const createdInvoiceItems: PurchaseInvoiceItemRecord[] = [];
+      const inventoryUpdates: Array<{
+        productId: number;
+        productName: string;
+        productSku: string;
+        addedQuantity: number;
+        newQuantity: number;
+        transactionId: number;
+        stockStatus: 'IN STOCK' | 'LOW STOCK' | 'OUT OF STOCK';
+      }> = [];
+      const triggeredNotifications: any[] = [];
+
+      for (const outcome of matchOutcomes) {
+        let targetProduct = outcome.matchedProduct;
+        const item = outcome.item;
+        const qtyToAdd = Number(item.quantity?.value);
+        const unitPrice = Number(item.unitPrice?.value) || 0;
+
+        // If new product needed, create it now (confirmed by user)
+        if (!targetProduct) {
+          const generatedSku =
+            item.sku?.value && item.sku.value !== 'Missing' && item.sku.value !== 'SKU-UNRESOLVED'
+              ? item.sku.value.trim()
+              : `SKU-INV-${Date.now().toString().slice(-4)}-${Math.floor(Math.random() * 100)}`;
+
+          const barcodeVal =
+            item.barcode?.value && item.barcode.value !== 'Not detected' && item.barcode.value !== 'Missing / Illegible'
+              ? item.barcode.value.trim()
+              : null;
+
+          // Double check unique SKU and barcode before insert
+          if (productsStore.some((p) => p.sku.toLowerCase() === generatedSku.toLowerCase())) {
+            return rollbackTransaction(
+              `Unique constraint violated: Cannot create product with duplicate SKU '${generatedSku}'.`,
+              6,
+              'Create invoice items',
+              409
+            );
+          }
+          if (barcodeVal && productsStore.some((p) => p.barcode === barcodeVal)) {
+            return rollbackTransaction(
+              `Unique constraint violated: Cannot create product with duplicate barcode '${barcodeVal}'.`,
+              6,
+              'Create invoice items',
+              409
+            );
+          }
+
+          targetProduct = {
+            id: nextProductId++,
+            name: item.productName?.value || 'Unnamed Product',
+            sku: generatedSku,
+            barcode: barcodeVal,
+            description: `Auto-cataloged from confirmed invoice ${invoice.invoiceNumber}`,
+            categoryId: null,
+            categoryName: 'General Produce / Goods',
+            supplierId: null,
+            supplierName: supplierName,
+            purchasePrice: unitPrice,
+            sellingPrice: Number((unitPrice * 1.35).toFixed(2)),
+            taxRate: 0.0,
+            unit: 'PCS',
+            minimumInventoryThreshold: 10,
+            active: true,
+            createdAt: confirmedTimestamp,
+            updatedAt: confirmedTimestamp,
+          };
+
+          productsStore.push(targetProduct);
+        }
+
+        // Link matched product back to OCR item
+        item.matchedProductId = targetProduct.id;
+        item.matchedProductName = targetProduct.name;
+        item.matchedProductSku = targetProduct.sku;
+
+        // Create formal PurchaseInvoiceItemRecord
+        const invoiceItemRecord: PurchaseInvoiceItemRecord = {
+          id: nextPurchaseInvoiceItemId++,
+          purchaseInvoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          productId: targetProduct.id,
+          productName: targetProduct.name,
+          sku: targetProduct.sku,
+          barcode: targetProduct.barcode,
+          quantity: qtyToAdd,
+          unitPrice: unitPrice,
+          totalPrice: Number((qtyToAdd * unitPrice).toFixed(2)),
+          matchedBy: outcome.matchedBy,
+          createdAt: confirmedTimestamp,
+        };
+        purchaseInvoiceItemsStore.push(invoiceItemRecord);
+        createdInvoiceItems.push(invoiceItemRecord);
+
+        // ---------------------------------------------------------------------
+        // STEP 7: INCREASE INVENTORY
+        // ---------------------------------------------------------------------
+        const invRecord = getOrCreateInventory(targetProduct);
+        const prevQty = invRecord.currentQuantity;
+        const prevStatus = invRecord.stockStatus;
+        const newQty = Number((prevQty + qtyToAdd).toFixed(3));
+
+        invRecord.currentQuantity = newQty;
+        invRecord.lastUpdated = confirmedTimestamp;
+
+        // ---------------------------------------------------------------------
+        // STEP 8: CREATE PURCHASE INVENTORY TRANSACTIONS
+        // ---------------------------------------------------------------------
+        const txId = nextTxId++;
+        const tx: InventoryTransactionRecord = {
+          id: txId,
+          productId: targetProduct.id,
+          productName: targetProduct.name,
+          productSku: targetProduct.sku,
+          transactionType: 'PURCHASE',
+          quantity: qtyToAdd,
+          previousQuantity: prevQty,
+          newQuantity: newQty,
+          reason: `Purchase Invoice Confirmed: ${invoice.invoiceNumber}`,
+          referenceId: invoice.invoiceNumber,
+          createdAt: confirmedTimestamp,
+        };
+        inventoryTransactionsStore.push(tx);
+
+        // ---------------------------------------------------------------------
+        // STEP 9: RECALCULATE STOCK STATUS
+        // ---------------------------------------------------------------------
+        const newStatus = calculateInventoryStatus(newQty, targetProduct.minimumInventoryThreshold ?? 0);
+        invRecord.stockStatus = newStatus;
+
+        inventoryUpdates.push({
+          productId: targetProduct.id,
+          productName: targetProduct.name,
+          productSku: targetProduct.sku,
+          addedQuantity: qtyToAdd,
+          newQuantity: newQty,
+          transactionId: txId,
+          stockStatus: newStatus,
+        });
+
+        // ---------------------------------------------------------------------
+        // STEP 10: TRIGGER NOTIFICATION LOGIC
+        // ---------------------------------------------------------------------
+        if ((prevStatus === 'OUT OF STOCK' || prevStatus === 'LOW STOCK') && newStatus === 'IN STOCK') {
+          const restockNotification: NotificationRecord = {
+            id: nextNotificationId++,
+            type: 'RESTOCK',
+            message: `Product '${targetProduct.name}' (SKU: ${targetProduct.sku}) was successfully restocked (+${qtyToAdd} ${targetProduct.unit}) from Purchase Invoice ${invoice.invoiceNumber}. Current quantity: ${newQty} ${targetProduct.unit} (IN STOCK).`,
+            severity: 'INFO',
+            productId: targetProduct.id,
+            productName: targetProduct.name,
+            productSku: targetProduct.sku,
+            product: {
+              id: targetProduct.id,
+              name: targetProduct.name,
+              sku: targetProduct.sku,
+              unit: targetProduct.unit,
+            },
+            read: false,
+            createdAt: confirmedTimestamp,
+          };
+          notificationsStore.unshift(restockNotification);
+          triggeredNotifications.push(restockNotification);
+        } else {
+          // If still low stock or out of stock, trigger appropriate threshold alert
+          checkAndTriggerStockNotification(targetProduct, newQty);
+        }
+      }
+
+      console.log(
+        `[DB Transaction COMMITTED] Invoice ${invoice.invoiceNumber} confirmed successfully. Created ${createdInvoiceItems.length} invoice items, updated ${inventoryUpdates.length} product stocks, recorded ${inventoryUpdates.length} PURCHASE transactions.`
+      );
+
+      res.json({
+        success: true,
+        message: `Purchase invoice ${invoice.invoiceNumber} confirmed successfully via database transaction! All 10 verification and inventory steps executed.`,
+        invoice,
+        createdInvoiceItems,
+        inventoryUpdates,
+        skippedItemsCount: allItems.length - activeItems.length,
+        notificationsTriggered: triggeredNotifications,
+        transactionStatus: 'COMMITTED',
+        timestamp: confirmedTimestamp,
+      });
+    } catch (err: any) {
+      return rollbackTransaction(
+        `Unexpected failure during confirmation: ${err.message || 'Internal error'}. Transaction rolled back cleanly.`,
+        99,
+        'Database Transaction Safe Guard',
+        500
+      );
+    }
+  });
+
 
   // OpenAPI schema definition endpoint
   app.get('/api/v1/docs/openapi.json', (req: Request, res: Response) => {
