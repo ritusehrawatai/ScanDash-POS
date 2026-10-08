@@ -24,8 +24,45 @@ export interface ExtractedInvoiceItem {
   matchedProductId?: number | null;
   matchedProductName?: string | null;
   matchedProductSku?: string | null;
+  matchMethod?: 'BARCODE' | 'SKU' | 'EXACT_NAME' | 'FUZZY_NAME' | 'MANUAL_SELECTION' | 'NO_MATCH';
+  matchConfidence?: number;
+  matchReason?: string;
+  isLowConfidenceMatch?: boolean;
+  manualSelectionRequired?: boolean;
+  manualSelectionCompleted?: boolean;
+  userConfirmedNewProduct?: boolean;
   ignored?: boolean;
   userModified?: boolean;
+}
+
+export type ProductMatchMethod =
+  | 'BARCODE'
+  | 'SKU'
+  | 'EXACT_NAME'
+  | 'FUZZY_NAME'
+  | 'MANUAL_SELECTION'
+  | 'NO_MATCH';
+
+export interface ProductMatchSuggestion {
+  itemId: string;
+  suggestedProduct: {
+    id: number;
+    name: string;
+    sku: string;
+    barcode: string | null;
+    unit: string;
+    sellingPrice: number;
+    purchasePrice: number;
+    currentQuantity?: number;
+    categoryName?: string | null;
+  } | null;
+  matchMethod: ProductMatchMethod;
+  matchConfidence: number; // 0 to 100
+  isLowConfidence: boolean; // < 75 or FUZZY_NAME or NO_MATCH
+  matchReason: string;
+  manualSelectionRequired: boolean;
+  manualSelectionCompleted?: boolean;
+  userConfirmedNewProduct?: boolean;
 }
 
 export interface InvoiceOcrResult {
@@ -93,6 +130,13 @@ export interface InvoiceReviewItemUpdate {
   matchedProductId?: number | null;
   matchedProductName?: string | null;
   matchedProductSku?: string | null;
+  matchMethod?: ProductMatchMethod;
+  matchConfidence?: number;
+  matchReason?: string;
+  isLowConfidenceMatch?: boolean;
+  manualSelectionRequired?: boolean;
+  manualSelectionCompleted?: boolean;
+  userConfirmedNewProduct?: boolean;
   ignored?: boolean;
   userModified?: boolean;
   uncertainMatchConfirmed?: boolean;
@@ -110,6 +154,7 @@ export interface InvoiceReviewPayload {
 export interface InvoiceConfirmOptions {
   confirmedUncertainMatches?: boolean;
   simulateFailure?: boolean;
+  confirmedNewProductItemIds?: string[];
 }
 
 export interface InvoiceConfirmResponse {

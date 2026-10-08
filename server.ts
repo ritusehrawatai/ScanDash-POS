@@ -225,9 +225,47 @@ async function startServer() {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     },
+    {
+      id: 5,
+      name: 'Greek Yogurt Plain 32oz',
+      sku: 'SKU-YOG-001',
+      barcode: '012345678905',
+      description: 'All natural whole milk plain Greek yogurt',
+      categoryId: 2,
+      categoryName: 'Dairy',
+      supplierId: 2,
+      supplierName: 'Sunny Ridge Dairies',
+      purchasePrice: 2.1,
+      sellingPrice: 3.49,
+      taxRate: 0.0,
+      unit: 'TUB',
+      minimumInventoryThreshold: 10,
+      active: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      id: 6,
+      name: 'Artisan Sourdough Loaf',
+      sku: 'SKU-BAK-001',
+      barcode: '012345678906',
+      description: 'Slow-fermented artisan sourdough bread',
+      categoryId: 3,
+      categoryName: 'Bakery',
+      supplierId: 1,
+      supplierName: 'Green Valley Produce',
+      purchasePrice: 1.8,
+      sellingPrice: 4.29,
+      taxRate: 0.0,
+      unit: 'LOAF',
+      minimumInventoryThreshold: 8,
+      active: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
   ];
 
-  let nextProductId = 5;
+  let nextProductId = 7;
 
   // Helper validation for price and threshold
   function validateProductInput(body: any): string | null {
@@ -669,9 +707,37 @@ async function startServer() {
         lastUpdated: new Date().toISOString(),
       },
     ],
+    [
+      5,
+      {
+        id: 5,
+        productId: 5,
+        productName: 'Greek Yogurt Plain 32oz',
+        productSku: 'SKU-YOG-001',
+        unit: 'TUB',
+        currentQuantity: 4.0,
+        minimumInventoryThreshold: 10,
+        stockStatus: 'LOW STOCK',
+        lastUpdated: new Date().toISOString(),
+      },
+    ],
+    [
+      6,
+      {
+        id: 6,
+        productId: 6,
+        productName: 'Artisan Sourdough Loaf',
+        productSku: 'SKU-BAK-001',
+        unit: 'LOAF',
+        currentQuantity: 0.0,
+        minimumInventoryThreshold: 8,
+        stockStatus: 'OUT OF STOCK',
+        lastUpdated: new Date().toISOString(),
+      },
+    ],
   ]);
 
-  let nextInvId = 5;
+  let nextInvId = 7;
   let nextTxId = 100;
 
   // ==========================================
@@ -695,8 +761,43 @@ async function startServer() {
     createdAt: string;
   }
 
-  let nextNotificationId = 1;
-  const notificationsStore: NotificationRecord[] = [];
+  let nextNotificationId = 3;
+  const notificationsStore: NotificationRecord[] = [
+    {
+      id: 1,
+      type: 'OUT_OF_STOCK',
+      message: "Product 'Artisan Sourdough Loaf' (SKU: SKU-BAK-001) is OUT OF STOCK. Current quantity: 0 LOAF.",
+      severity: 'CRITICAL',
+      productId: 6,
+      productName: 'Artisan Sourdough Loaf',
+      productSku: 'SKU-BAK-001',
+      product: {
+        id: 6,
+        name: 'Artisan Sourdough Loaf',
+        sku: 'SKU-BAK-001',
+        unit: 'LOAF',
+      },
+      read: false,
+      createdAt: new Date(Date.now() - 1800000).toISOString(),
+    },
+    {
+      id: 2,
+      type: 'LOW_STOCK',
+      message: "Product 'Greek Yogurt Plain 32oz' (SKU: SKU-YOG-001) is running LOW ON STOCK. Current quantity: 4 TUB (Minimum threshold: 10).",
+      severity: 'WARNING',
+      productId: 5,
+      productName: 'Greek Yogurt Plain 32oz',
+      productSku: 'SKU-YOG-001',
+      product: {
+        id: 5,
+        name: 'Greek Yogurt Plain 32oz',
+        sku: 'SKU-YOG-001',
+        unit: 'TUB',
+      },
+      read: false,
+      createdAt: new Date(Date.now() - 3600000).toISOString(),
+    },
+  ];
 
   function checkAndTriggerStockNotification(product: ProductRecord, currentQuantity: number) {
     if (!product) return;
@@ -783,6 +884,32 @@ async function startServer() {
       newQuantity: 28.0,
       reason: 'Dairy delivery',
       referenceId: 'PO-1002',
+      createdAt: new Date(Date.now() - 3600000).toISOString(),
+    },
+    {
+      id: 3,
+      productId: 1,
+      productName: 'Organic Cavendish Bananas',
+      productSku: 'SKU-BAN-001',
+      transactionType: 'SALE',
+      quantity: -2.0,
+      previousQuantity: 47.5,
+      newQuantity: 45.5,
+      reason: 'POS Sale. Receipt: RCP-20261008-001',
+      referenceId: 'RCP-20261008-001',
+      createdAt: new Date(Date.now() - 7200000).toISOString(),
+    },
+    {
+      id: 4,
+      productId: 5,
+      productName: 'Greek Yogurt Plain 32oz',
+      productSku: 'SKU-YOG-001',
+      transactionType: 'SALE',
+      quantity: -1.0,
+      previousQuantity: 5.0,
+      newQuantity: 4.0,
+      reason: 'POS Sale. Receipt: RCP-20261008-002',
+      referenceId: 'RCP-20261008-002',
       createdAt: new Date(Date.now() - 3600000).toISOString(),
     },
   ];
@@ -1182,9 +1309,104 @@ async function startServer() {
     createdAt: string;
   }
 
-  let nextSaleId = 1;
-  let nextSaleItemId = 1;
-  const salesStore: SaleRecord[] = [];
+  let nextSaleId = 3;
+  let nextSaleItemId = 6;
+  const salesStore: SaleRecord[] = [
+    {
+      id: 1,
+      receiptNumber: 'RCP-20261008-001',
+      subtotal: 9.07,
+      taxAmount: 0.0,
+      totalAmount: 9.07,
+      status: 'COMPLETED',
+      itemCount: 3,
+      items: [
+        {
+          id: 1,
+          saleId: 1,
+          productId: 1,
+          productName: 'Organic Cavendish Bananas',
+          productSku: 'SKU-BAN-001',
+          unit: 'KG',
+          quantity: 2.0,
+          unitPrice: 1.29,
+          taxRate: 0.0,
+          subtotal: 2.58,
+          taxAmount: 0.0,
+          totalAmount: 2.58,
+        },
+        {
+          id: 2,
+          saleId: 1,
+          productId: 2,
+          productName: 'Whole Milk 1 Gallon',
+          productSku: 'SKU-MLK-001',
+          unit: 'GALLON',
+          quantity: 1.0,
+          unitPrice: 3.89,
+          taxRate: 0.0,
+          subtotal: 3.89,
+          taxAmount: 0.0,
+          totalAmount: 3.89,
+        },
+        {
+          id: 3,
+          saleId: 1,
+          productId: 4,
+          productName: 'Chocolate Milk 1 Quart',
+          productSku: 'SKU-MLK-003',
+          unit: 'QUART',
+          quantity: 1.0,
+          unitPrice: 2.79,
+          taxRate: 0.0,
+          subtotal: 2.79,
+          taxAmount: 0.0,
+          totalAmount: 2.79,
+        },
+      ],
+      createdAt: new Date(Date.now() - 7200000).toISOString(),
+    },
+    {
+      id: 2,
+      receiptNumber: 'RCP-20261008-002',
+      subtotal: 12.38,
+      taxAmount: 0.0,
+      totalAmount: 12.38,
+      status: 'COMPLETED',
+      itemCount: 4,
+      items: [
+        {
+          id: 4,
+          saleId: 2,
+          productId: 3,
+          productName: 'Organic Milk Half Gallon',
+          productSku: 'SKU-MLK-002',
+          unit: 'GALLON',
+          quantity: 2.0,
+          unitPrice: 4.49,
+          taxRate: 0.0,
+          subtotal: 8.98,
+          taxAmount: 0.0,
+          totalAmount: 8.98,
+        },
+        {
+          id: 5,
+          saleId: 2,
+          productId: 5,
+          productName: 'Greek Yogurt Plain 32oz',
+          productSku: 'SKU-YOG-001',
+          unit: 'TUB',
+          quantity: 1.0,
+          unitPrice: 3.49,
+          taxRate: 0.0,
+          subtotal: 3.49,
+          taxAmount: 0.0,
+          totalAmount: 3.49,
+        },
+      ],
+      createdAt: new Date(Date.now() - 3600000).toISOString(),
+    },
+  ];
 
   // POST /api/sales - Complete a sale transactionally
   app.post('/api/sales', (req: Request, res: Response) => {
@@ -2295,6 +2517,13 @@ async function startServer() {
           matchedProductId: matchedPid,
           matchedProductName: matchedPName,
           matchedProductSku: matchedPSku,
+          matchMethod: it.matchMethod !== undefined ? it.matchMethod : existing.matchMethod,
+          matchConfidence: it.matchConfidence !== undefined ? Number(it.matchConfidence) : existing.matchConfidence,
+          matchReason: it.matchReason !== undefined ? it.matchReason : existing.matchReason,
+          isLowConfidenceMatch: it.isLowConfidenceMatch !== undefined ? Boolean(it.isLowConfidenceMatch) : existing.isLowConfidenceMatch,
+          manualSelectionRequired: it.manualSelectionRequired !== undefined ? Boolean(it.manualSelectionRequired) : existing.manualSelectionRequired,
+          manualSelectionCompleted: it.manualSelectionCompleted !== undefined ? Boolean(it.manualSelectionCompleted) : existing.manualSelectionCompleted,
+          userConfirmedNewProduct: it.userConfirmedNewProduct !== undefined ? Boolean(it.userConfirmedNewProduct) : existing.userConfirmedNewProduct,
           ignored: isIgnored,
           userModified: true,
         };
@@ -2312,7 +2541,7 @@ async function startServer() {
 
     // Update review summary counters
     const activeItems = invoice.ocrResult.items.filter((it: any) => !it.ignored);
-    const flaggedItems = activeItems.filter((it: any) => it.flaggedForReview);
+    const flaggedItems = activeItems.filter((it: any) => it.flaggedForReview || it.manualSelectionRequired);
     invoice.ocrResult.hasLowConfidenceValues = flaggedItems.length > 0;
     invoice.ocrResult.manualReviewRequired = flaggedItems.length > 0;
     invoice.ocrResult.flaggedFieldsCount = flaggedItems.length;
@@ -2327,6 +2556,225 @@ async function startServer() {
       message: 'Invoice review draft saved successfully. Inventory remains completely untouched.',
       data: invoice,
       timestamp: new Date().toISOString(),
+    });
+  });
+
+  // =========================================================================
+  // 4-TIER PRODUCT MATCHING ENGINE
+  // Order of Evaluation:
+  // 1. Barcode
+  // 2. SKU
+  // 3. Exact normalized name
+  // 4. Fuzzy name matching
+  // =========================================================================
+
+  function normalizeProductName(str: string): string {
+    return (str || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function computeLevenshteinDistance(s1: string, s2: string): number {
+    const m = s1.length;
+    const n = s2.length;
+    const d: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+
+    for (let i = 0; i <= m; i++) d[i][0] = i;
+    for (let j = 0; j <= n; j++) d[0][j] = j;
+
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+        d[i][j] = Math.min(
+          d[i - 1][j] + 1,
+          d[i][j - 1] + 1,
+          d[i - 1][j - 1] + cost
+        );
+      }
+    }
+
+    return d[m][n];
+  }
+
+  function computeFuzzySimilarity(a: string, b: string): number {
+    const normA = normalizeProductName(a);
+    const normB = normalizeProductName(b);
+    if (!normA || !normB) return 0.0;
+    if (normA === normB) return 1.0;
+
+    // Substring containment check
+    if (normA.includes(normB) || normB.includes(normA)) {
+      const minLen = Math.min(normA.length, normB.length);
+      const maxLen = Math.max(normA.length, normB.length);
+      return Math.max(0.70, (minLen / maxLen) * 0.90);
+    }
+
+    // Token overlap Dice coefficient
+    const tokensA = new Set(normA.split(' ').filter((t) => t.length > 1));
+    const tokensB = new Set(normB.split(' ').filter((t) => t.length > 1));
+    if (tokensA.size === 0 || tokensB.size === 0) return 0.0;
+
+    let matches = 0;
+    tokensA.forEach((token) => {
+      if (tokensB.has(token)) {
+        matches += 1.0;
+      } else {
+        for (const bToken of tokensB) {
+          if (bToken.startsWith(token) || token.startsWith(bToken)) {
+            matches += 0.5;
+            break;
+          }
+        }
+      }
+    });
+
+    const dice = (2 * matches) / (tokensA.size + tokensB.size);
+
+    // Edit distance similarity
+    const maxLen = Math.max(normA.length, normB.length);
+    const levDist = computeLevenshteinDistance(normA, normB);
+    const levSim = Math.max(0, 1 - levDist / maxLen);
+
+    return Math.min(1.0, Math.max(dice * 0.85, levSim * 0.85));
+  }
+
+  interface MatchEvaluation {
+    matchedProduct: ProductRecord | null;
+    matchMethod: 'BARCODE' | 'SKU' | 'EXACT_NAME' | 'FUZZY_NAME' | 'NO_MATCH';
+    matchConfidence: number; // 0 - 100
+    isLowConfidence: boolean; // < 75 or FUZZY_NAME or NO_MATCH
+    manualSelectionRequired: boolean;
+    reason: string;
+  }
+
+  function evaluateProductMatch(
+    item: { productName?: string; sku?: string; barcode?: string },
+    products: ProductRecord[]
+  ): MatchEvaluation {
+    const rawBarcode = item.barcode?.trim() || '';
+    const rawSku = item.sku?.trim() || '';
+    const rawName = item.productName?.trim() || '';
+
+    // 1. TIER 1: BARCODE MATCH
+    if (rawBarcode && rawBarcode !== 'Not detected' && rawBarcode !== 'Missing / Illegible' && rawBarcode.length >= 3) {
+      const barcodeMatch = products.find((p) => p.barcode && p.barcode.trim() === rawBarcode);
+      if (barcodeMatch) {
+        return {
+          matchedProduct: barcodeMatch,
+          matchMethod: 'BARCODE',
+          matchConfidence: 100,
+          isLowConfidence: false,
+          manualSelectionRequired: false,
+          reason: `Exact Barcode match (${barcodeMatch.barcode})`,
+        };
+      }
+    }
+
+    // 2. TIER 2: SKU MATCH
+    if (rawSku && rawSku !== 'Missing' && rawSku !== 'SKU-UNRESOLVED' && rawSku.length >= 2) {
+      const cleanInputSku = rawSku.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const skuMatch = products.find(
+        (p) => p.sku && p.sku.toLowerCase().replace(/[^a-z0-9]/g, '') === cleanInputSku
+      );
+      if (skuMatch) {
+        return {
+          matchedProduct: skuMatch,
+          matchMethod: 'SKU',
+          matchConfidence: 95,
+          isLowConfidence: false,
+          manualSelectionRequired: false,
+          reason: `Exact SKU match (${skuMatch.sku})`,
+        };
+      }
+    }
+
+    // 3. TIER 3: EXACT NORMALIZED NAME
+    if (rawName) {
+      const normInputName = normalizeProductName(rawName);
+      if (normInputName.length > 0) {
+        const exactNameMatch = products.find((p) => normalizeProductName(p.name) === normInputName);
+        if (exactNameMatch) {
+          return {
+            matchedProduct: exactNameMatch,
+            matchMethod: 'EXACT_NAME',
+            matchConfidence: 90,
+            isLowConfidence: false,
+            manualSelectionRequired: false,
+            reason: `Exact normalized name match ("${exactNameMatch.name}")`,
+          };
+        }
+      }
+    }
+
+    // 4. TIER 4: FUZZY NAME MATCHING
+    if (rawName && products.length > 0) {
+      let bestProduct: ProductRecord | null = null;
+      let highestSimilarity = 0;
+
+      for (const prod of products) {
+        const similarity = computeFuzzySimilarity(rawName, prod.name);
+        if (similarity > highestSimilarity) {
+          highestSimilarity = similarity;
+          bestProduct = prod;
+        }
+      }
+
+      if (bestProduct && highestSimilarity >= 0.40) {
+        const confPercent = Math.min(84, Math.round(highestSimilarity * 100));
+        const isLow = confPercent < 75; // Confidence threshold
+        return {
+          matchedProduct: bestProduct,
+          matchMethod: 'FUZZY_NAME',
+          matchConfidence: confPercent,
+          isLowConfidence: isLow,
+          manualSelectionRequired: isLow,
+          reason: isLow
+            ? `Low confidence fuzzy match (${confPercent}%) with "${bestProduct.name}". Manual selection required.`
+            : `Fuzzy name resemblance (${confPercent}%) with "${bestProduct.name}"`,
+        };
+      }
+    }
+
+    // NO MATCH FOUND
+    return {
+      matchedProduct: null,
+      matchMethod: 'NO_MATCH',
+      matchConfidence: 0,
+      isLowConfidence: true,
+      manualSelectionRequired: true,
+      reason: 'No matching catalog product. Manual selection or new product confirmation required.',
+    };
+  }
+
+  // POST /api/invoices/match-product - Run 4-tier matching for a line item
+  app.post('/api/invoices/match-product', (req: Request, res: Response) => {
+    const { productName, sku, barcode, itemId } = req.body;
+    const match = evaluateProductMatch({ productName, sku, barcode }, productsStore);
+
+    res.json({
+      success: true,
+      data: {
+        itemId: itemId || 'item',
+        suggestedProduct: match.matchedProduct
+          ? {
+              id: match.matchedProduct.id,
+              name: match.matchedProduct.name,
+              sku: match.matchedProduct.sku,
+              barcode: match.matchedProduct.barcode,
+              unit: match.matchedProduct.unit,
+              purchasePrice: match.matchedProduct.purchasePrice,
+              sellingPrice: match.matchedProduct.sellingPrice,
+              categoryName: match.matchedProduct.categoryName,
+            }
+          : null,
+        matchMethod: match.matchMethod,
+        matchConfidence: match.matchConfidence,
+        isLowConfidence: match.isLowConfidence,
+        manualSelectionRequired: match.manualSelectionRequired,
+        matchReason: match.reason,
+      },
     });
   });
 
@@ -2554,6 +3002,11 @@ async function startServer() {
 
       // -----------------------------------------------------------------------
       // STEP 3: MATCH EACH ITEM TO A PRODUCT
+      // Matching Order:
+      // 1. Barcode
+      // 2. SKU
+      // 3. Exact normalized name
+      // 4. Fuzzy name matching
       // -----------------------------------------------------------------------
       interface ItemMatchOutcome {
         item: any;
@@ -2561,7 +3014,8 @@ async function startServer() {
         matchedBy: 'EXPLICIT_USER_SELECTION' | 'BARCODE' | 'SKU' | 'NAME' | 'NEW_PRODUCT_CREATED';
         isCertain: boolean;
         certaintyScore: number;
-        reason?: string;
+        reason: string;
+        manualSelectionRequired: boolean;
       }
 
       const matchOutcomes: ItemMatchOutcome[] = [];
@@ -2572,8 +3026,9 @@ async function startServer() {
         let isCertain = true;
         let certaintyScore = 100;
         let reason = 'High confidence exact match';
+        let manualSelectionRequired = false;
 
-        // 3a. Explicit user selection
+        // Priority 0: Explicit user selection
         if (item.matchedProductId) {
           const found = productsStore.find((p) => p.id === Number(item.matchedProductId));
           if (found) {
@@ -2581,7 +3036,8 @@ async function startServer() {
             matchedBy = 'EXPLICIT_USER_SELECTION';
             isCertain = true;
             certaintyScore = 100;
-            reason = 'Explicitly matched by user';
+            reason = 'Explicit manual selection by user';
+            manualSelectionRequired = false;
           } else {
             return rollbackTransaction(
               `Matched product ID ${item.matchedProductId} specified for '${item.productName.value}' does not exist in catalog.`,
@@ -2590,128 +3046,40 @@ async function startServer() {
               422
             );
           }
+        } else {
+          // Run exact 4-tier matching sequence:
+          // 1. Barcode
+          // 2. SKU
+          // 3. Exact normalized name
+          // 4. Fuzzy name matching
+          const evalResult = evaluateProductMatch(
+            {
+              productName: item.productName?.value,
+              sku: item.sku?.value,
+              barcode: item.barcode?.value,
+            },
+            productsStore
+          );
+
+          matchedProduct = evalResult.matchedProduct;
+          matchedBy =
+            evalResult.matchMethod === 'EXACT_NAME' || evalResult.matchMethod === 'FUZZY_NAME'
+              ? 'NAME'
+              : evalResult.matchMethod === 'BARCODE'
+              ? 'BARCODE'
+              : evalResult.matchMethod === 'SKU'
+              ? 'SKU'
+              : 'NEW_PRODUCT_CREATED';
+          certaintyScore = evalResult.matchConfidence;
+          isCertain = !evalResult.isLowConfidence;
+          reason = evalResult.reason;
+          manualSelectionRequired = evalResult.manualSelectionRequired;
         }
 
-        // 3b. Match by Barcode
-        if (!matchedProduct && item.barcode?.value && item.barcode.value !== 'Not detected' && item.barcode.value !== 'Missing / Illegible') {
-          const found = productsStore.find((p) => p.barcode === item.barcode.value.trim());
-          if (found) {
-            matchedProduct = found;
-            matchedBy = 'BARCODE';
-            const barcodeConfidence = item.barcode?.confidence ?? 100;
-            if (barcodeConfidence < 75) {
-              isCertain = false;
-              certaintyScore = barcodeConfidence;
-              reason = `Low OCR confidence (${barcodeConfidence}%) on barcode`;
-            } else {
-              isCertain = true;
-              certaintyScore = barcodeConfidence;
-            }
-          }
-        }
-
-        // 3c. Match by SKU
-        if (!matchedProduct && item.sku?.value && item.sku.value !== 'Missing' && item.sku.value !== 'SKU-UNRESOLVED') {
-          const found = productsStore.find((p) => p.sku.toLowerCase() === item.sku.value.trim().toLowerCase());
-          if (found) {
-            matchedProduct = found;
-            matchedBy = 'SKU';
-            const skuConfidence = item.sku?.confidence ?? 100;
-            if (skuConfidence < 75) {
-              isCertain = false;
-              certaintyScore = skuConfidence;
-              reason = `Low OCR confidence (${skuConfidence}%) on SKU`;
-            } else {
-              isCertain = true;
-              certaintyScore = skuConfidence;
-            }
-          }
-        }
-
-        // 3d. Match by Product Name
-        if (!matchedProduct && item.productName?.value) {
-          const cleanName = item.productName.value.toLowerCase().trim();
-          // Exact name match
-          const foundExact = productsStore.find((p) => p.name.toLowerCase().trim() === cleanName);
-          if (foundExact) {
-            matchedProduct = foundExact;
-            matchedBy = 'NAME';
-            const nameConfidence = item.productName?.confidence ?? 100;
-            if (nameConfidence < 75) {
-              isCertain = false;
-              certaintyScore = nameConfidence;
-              reason = `Low OCR confidence (${nameConfidence}%) on product name`;
-            } else {
-              isCertain = true;
-              certaintyScore = nameConfidence;
-            }
-          } else {
-            // Fuzzy / partial name match
-            const foundFuzzy = productsStore.find(
-              (p) =>
-                p.name.toLowerCase().includes(cleanName) ||
-                cleanName.includes(p.name.toLowerCase()) ||
-                (cleanName.length > 5 && p.name.toLowerCase().slice(0, 5) === cleanName.slice(0, 5))
-            );
-            if (foundFuzzy) {
-              matchedProduct = foundFuzzy;
-              matchedBy = 'NAME';
-              isCertain = false; // Fuzzy name matching is uncertain!
-              certaintyScore = 65;
-              reason = `Fuzzy name resemblance to catalog product '${foundFuzzy.name}'`;
-            }
-          }
-        }
-
-        // 3e. Product not found in catalog: Candidate for creating new product
-        if (!matchedProduct) {
-          // RULE: Never silently create duplicate products!
-          // Inspect if an existing product already shares this barcode or SKU
-          const candidateBarcode =
-            item.barcode?.value && item.barcode.value !== 'Not detected' && item.barcode.value !== 'Missing / Illegible'
-              ? item.barcode.value.trim()
-              : null;
-          const candidateSku =
-            item.sku?.value && item.sku.value !== 'Missing' && item.sku.value !== 'SKU-UNRESOLVED'
-              ? item.sku.value.trim()
-              : null;
-
-          if (candidateBarcode) {
-            const conflictBarcode = productsStore.find((p) => p.barcode === candidateBarcode);
-            if (conflictBarcode) {
-              return rollbackTransaction(
-                `Duplicate conflict: Product '${item.productName.value}' has barcode '${candidateBarcode}' which already belongs to '${conflictBarcode.name}' (SKU: ${conflictBarcode.sku}). Never silently create duplicate products.`,
-                3,
-                'Match each item to a product',
-                409,
-                { conflictingProduct: conflictBarcode }
-              );
-            }
-          }
-
-          if (candidateSku) {
-            const conflictSku = productsStore.find((p) => p.sku.toLowerCase() === candidateSku.toLowerCase());
-            if (conflictSku) {
-              return rollbackTransaction(
-                `Duplicate conflict: Product '${item.productName.value}' has SKU '${candidateSku}' which already belongs to '${conflictSku.name}'. Never silently create duplicate products.`,
-                3,
-                'Match each item to a product',
-                409,
-                { conflictingProduct: conflictSku }
-              );
-            }
-          }
-
-          matchedProduct = null;
-          matchedBy = 'NEW_PRODUCT_CREATED';
-          isCertain = false; // Unmatched items require explicit user approval
-          certaintyScore = 50;
-          reason = 'Unmatched item: Will be cataloged as a brand new product';
-        }
-
-        // Low OCR overall confidence also makes match uncertain
+        // Low OCR overall confidence also requires user verification
         if (item.confidence < 75 || item.flaggedForReview) {
           isCertain = false;
+          manualSelectionRequired = true;
           if (certaintyScore > item.confidence) certaintyScore = item.confidence;
         }
 
@@ -2722,38 +3090,65 @@ async function startServer() {
           isCertain,
           certaintyScore,
           reason,
+          manualSelectionRequired,
         });
       }
 
       // -----------------------------------------------------------------------
-      // STEP 4: REQUIRE USER CONFIRMATION FOR UNCERTAIN MATCHES
+      // STEP 4: REQUIRE USER CONFIRMATION FOR UNCERTAIN MATCHES & NEW PRODUCTS
+      // Requirements:
+      // - If confidence is low, require manual selection
+      // - Do not automatically create a new product without user confirmation
       // -----------------------------------------------------------------------
-      const uncertainMatches = matchOutcomes.filter((m) => !m.isCertain);
+      const lowConfidenceItems = matchOutcomes.filter((m) => m.manualSelectionRequired || !m.isCertain);
+      const unmatchedItems = matchOutcomes.filter((m) => !m.matchedProduct);
 
-      if (uncertainMatches.length > 0) {
-        const userExplicitlyConfirmed =
-          req.body?.confirmedUncertainMatches === true ||
-          uncertainMatches.every((u) => Boolean(u.item.uncertainMatchConfirmed));
+      // Enforce: If confidence is low, require manual selection or explicit acceptance
+      for (const m of lowConfidenceItems) {
+        const itemManuallyResolved =
+          Boolean(m.item.manualSelectionCompleted) ||
+          Boolean(m.item.matchedProductId) ||
+          Boolean(m.item.userConfirmedNewProduct) ||
+          Boolean(m.item.uncertainMatchConfirmed) ||
+          req.body?.confirmedUncertainMatches === true;
 
-        if (!userExplicitlyConfirmed) {
+        if (!itemManuallyResolved) {
           return rollbackTransaction(
-            `Confirmation blocked: Invoice contains ${uncertainMatches.length} uncertain product match(es) or new product candidate(s) that require explicit user verification.`,
+            `Confirmation blocked: Line item '${m.item.productName?.value}' has low match confidence (${m.certaintyScore}%). Manual selection or explicit acceptance is required.`,
             4,
             'Require user confirmation for uncertain matches',
             422,
             {
-              uncertainMatchesCount: uncertainMatches.length,
-              uncertainItems: uncertainMatches.map((u) => ({
-                itemId: u.item.id,
-                productName: u.item.productName?.value,
-                sku: u.item.sku?.value,
-                barcode: u.item.barcode?.value,
-                matchedProductId: u.matchedProduct?.id ?? null,
-                matchedProductName: u.matchedProduct?.name ?? null,
-                matchedBy: u.matchedBy,
-                confidence: u.certaintyScore,
-                reason: u.reason,
-              })),
+              itemId: m.item.id,
+              productName: m.item.productName?.value,
+              suggestedProduct: m.matchedProduct
+                ? { id: m.matchedProduct.id, name: m.matchedProduct.name, sku: m.matchedProduct.sku }
+                : null,
+              confidence: m.certaintyScore,
+              reason: m.reason,
+            }
+          );
+        }
+      }
+
+      // Enforce: Do not automatically create a new product without user confirmation
+      for (const m of unmatchedItems) {
+        const userApprovedNew =
+          Boolean(m.item.userConfirmedNewProduct) ||
+          (Array.isArray(req.body?.confirmedNewProductItemIds) && req.body.confirmedNewProductItemIds.includes(m.item.id)) ||
+          req.body?.confirmedUncertainMatches === true;
+
+        if (!userApprovedNew) {
+          return rollbackTransaction(
+            `Confirmation blocked: Line item '${m.item.productName?.value}' is unmatched. Products cannot be automatically created without explicit user confirmation. Please manually select a catalog product or confirm new product creation.`,
+            4,
+            'Require user confirmation for uncertain matches',
+            422,
+            {
+              itemId: m.item.id,
+              productName: m.item.productName?.value,
+              sku: m.item.sku?.value,
+              barcode: m.item.barcode?.value,
             }
           );
         }
@@ -2801,8 +3196,22 @@ async function startServer() {
         const qtyToAdd = Number(item.quantity?.value);
         const unitPrice = Number(item.unitPrice?.value) || 0;
 
-        // If new product needed, create it now (confirmed by user)
+        // If new product needed, verify explicit user confirmation before creation
         if (!targetProduct) {
+          const isExplicitlyConfirmedAsNew =
+            Boolean(item.userConfirmedNewProduct) ||
+            (Array.isArray(req.body?.confirmedNewProductItemIds) && req.body.confirmedNewProductItemIds.includes(item.id)) ||
+            req.body?.confirmedUncertainMatches === true;
+
+          if (!isExplicitlyConfirmedAsNew) {
+            return rollbackTransaction(
+              `Cannot automatically create new product for '${item.productName.value}' without explicit user confirmation. Please manually select a catalog product or confirm new product creation.`,
+              6,
+              'Create invoice items',
+              422
+            );
+          }
+
           const generatedSku =
             item.sku?.value && item.sku.value !== 'Missing' && item.sku.value !== 'SKU-UNRESOLVED'
               ? item.sku.value.trim()

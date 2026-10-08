@@ -238,4 +238,37 @@ export async function fetchPurchaseInvoiceItems(
   return json.data;
 }
 
+/**
+ * Match an item against the catalog using the 4-tier matching sequence:
+ * 1. Barcode
+ * 2. SKU
+ * 3. Exact normalized name
+ * 4. Fuzzy name matching
+ */
+export async function matchInvoiceProduct(params: {
+  productName: string;
+  sku?: string;
+  barcode?: string;
+  itemId?: string;
+}): Promise<import('../types/invoice').ProductMatchSuggestion> {
+  const response = await fetch(`${BASE_URL}/api/invoices/match-product`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(params),
+  });
+
+  const json = await response.json();
+
+  if (!response.ok || !json.success) {
+    throw new InvoiceApiError(
+      json.error || json.message || 'Failed to match invoice product',
+      response.status
+    );
+  }
+
+  return json.data;
+}
+
 

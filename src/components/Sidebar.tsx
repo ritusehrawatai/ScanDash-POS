@@ -11,9 +11,10 @@ import {
   BarChart3,
   BookOpen,
   Store,
+  LayoutDashboard,
 } from 'lucide-react';
 
-export type NavTab = 'pos' | 'products' | 'inventory' | 'invoices' | 'health' | 'architecture' | 'explorer' | 'setup';
+export type NavTab = 'dashboard' | 'pos' | 'products' | 'inventory' | 'invoices' | 'health' | 'architecture' | 'explorer' | 'setup';
 
 interface SidebarProps {
   activeTab: NavTab;
@@ -30,15 +31,31 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
             <span>ScanDash POS</span>
           </div>
           <div className="text-[11px] text-stone-400 mt-0.5">
-            Phase 4: POS Shopping Cart Active
+            Phase 5: Owner & Admin Dashboard Active
           </div>
         </div>
 
         {/* Primary Navigation - Active initialized modules */}
         <div className="p-3 space-y-1">
           <div className="px-3 py-1.5 text-[11px] font-semibold text-stone-400 uppercase tracking-wider">
-            POS Operations
+            Store Management
           </div>
+
+          {/* Owner Dashboard */}
+          <button
+            onClick={() => onTabChange('dashboard')}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-colors text-left cursor-pointer ${
+              activeTab === 'dashboard'
+                ? 'bg-emerald-700 text-white shadow-xs'
+                : 'text-stone-300 hover:bg-stone-800 hover:text-white'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <LayoutDashboard className="w-4 h-4" />
+              <span>Owner Dashboard</span>
+            </div>
+            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+          </button>
 
           {/* POS Terminal / Cart */}
           <button
@@ -183,9 +200,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
           <div className="px-3 py-2 rounded-md text-xs text-stone-400 flex items-center justify-between opacity-70">
             <div className="flex items-center gap-2.5">
               <BarChart3 className="w-4 h-4 text-stone-400" />
-              <span>Sales & Reports</span>
+              <span>Advanced Analytics</span>
             </div>
-            <span className="text-[10px] font-mono text-stone-400">Phase 5</span>
+            <span className="text-[10px] font-mono text-stone-400">Phase 6</span>
           </div>
         </div>
       </div>

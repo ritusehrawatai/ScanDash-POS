@@ -25,6 +25,9 @@ import {
   FileCheck,
   X,
   RotateCcw,
+  Sliders,
+  Tag,
+  Zap,
 } from 'lucide-react';
 import {
   PurchaseInvoice,
@@ -32,6 +35,7 @@ import {
   InvoiceReviewPayload,
   InvoiceReviewItemUpdate,
   InvoiceConfirmResponse,
+  ProductMatchMethod,
 } from '../../types/invoice';
 import { Product } from '../../types/product';
 import {
@@ -41,6 +45,10 @@ import {
   InvoiceApiError,
 } from '../../api/invoiceApi';
 import { fetchProducts } from '../../api/productApi';
+import {
+  evaluateProductMatchOrder,
+  MatchEvaluationResult,
+} from '../../services/productMatchingService';
 
 interface InvoiceReviewScreenProps {
   invoice: PurchaseInvoice;
@@ -88,6 +96,20 @@ interface EditableItemState {
   totalConfidence: number;
   totalFlagged: boolean;
   totalReason?: string;
+  // 4-Tier Match Engine state
+  suggestedProductId?: number | null;
+  suggestedProductName?: string | null;
+  suggestedProductSku?: string | null;
+  suggestedProductBarcode?: string | null;
+  suggestedProductPrice?: number;
+  matchMethod?: ProductMatchMethod;
+  matchConfidence?: number; // 0 to 100
+  matchReason?: string;
+  isLowConfidenceMatch?: boolean; // < 75 or NO_MATCH
+  manualSelectionRequired?: boolean;
+  manualSelectionCompleted?: boolean;
+  userConfirmedNewProduct?: boolean;
+  uncertainMatchConfirmed?: boolean;
 }
 
 export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
@@ -146,7 +168,7 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
   });
 
   // Filters and search
-  const [itemFilter, setItemFilter] = useState<'ALL' | 'UNCERTAIN' | 'ACTIVE' | 'IGNORED' | 'UNMATCHED'>('ALL');
+  const [itemFilter, setItemFilter] = useState<'ALL' | 'UNCERTAIN' | 'LOW_CONFIDENCE' | 'ACTIVE' | 'IGNORED' | 'UNMATCHED'>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   // UI state
@@ -192,60 +214,64 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
     };
   }, []);
 
-  // Auto-match suggestions on initial load if item has no match
-  useEffect(() => {
-    if (catalogProducts.length === 0) return;
+  /**
+   * Run 4-Tier Product Matching Engine on line items:
+   * 1. Barcode
+   * 2. SKU
+   * 3. Exact normalized name
+   * 4. Fuzzy name matching
+   *
+   * Rules:
+   * - If confidence is high (>= 75%), pre-link matched product.
+   * - If confidence is low (< 75%), require manual selection (do NOT auto-link).
+   * - Do not automatically create a new product without user confirmation.
+   */
+  const runFourTierMatchingOnItems = (catalog: Product[]) => {
+    if (catalog.length === 0) return;
     setItems((prevItems) =>
       prevItems.map((item) => {
-        if (item.matchedProductId) return item;
-
-        // Try match by Barcode
-        if (item.barcode && item.barcode !== 'Not detected' && item.barcode !== 'Missing / Illegible') {
-          const matchedByBarcode = catalogProducts.find((p) => p.barcode === item.barcode);
-          if (matchedByBarcode) {
-            return {
-              ...item,
-              matchedProductId: matchedByBarcode.id,
-              matchedProductName: matchedByBarcode.name,
-              matchedProductSku: matchedByBarcode.sku,
-            };
-          }
+        // If user already manually selected or explicitly confirmed new product, preserve
+        if (item.manualSelectionCompleted || item.userConfirmedNewProduct) {
+          return item;
         }
 
-        // Try match by SKU
-        if (item.sku && item.sku !== 'Missing' && item.sku !== 'SKU-UNRESOLVED') {
-          const matchedBySku = catalogProducts.find(
-            (p) => p.sku.toLowerCase() === item.sku.toLowerCase()
-          );
-          if (matchedBySku) {
-            return {
-              ...item,
-              matchedProductId: matchedBySku.id,
-              matchedProductName: matchedBySku.name,
-              matchedProductSku: matchedBySku.sku,
-            };
-          }
-        }
+        const evalResult = evaluateProductMatchOrder(
+          {
+            productName: item.productName,
+            sku: item.sku,
+            barcode: item.barcode,
+          },
+          catalog
+        );
 
-        // Try match by Name (exact or close)
-        if (item.productName) {
-          const cleanItemName = item.productName.toLowerCase().trim();
-          const matchedByName = catalogProducts.find(
-            (p) => p.name.toLowerCase().trim() === cleanItemName
-          );
-          if (matchedByName) {
-            return {
-              ...item,
-              matchedProductId: matchedByName.id,
-              matchedProductName: matchedByName.name,
-              matchedProductSku: matchedByName.sku,
-            };
-          }
-        }
+        const isLow = evalResult.isLowConfidence;
+        const autoLink = !isLow && evalResult.suggestedProduct !== null;
 
-        return item;
+        return {
+          ...item,
+          suggestedProductId: evalResult.suggestedProduct?.id ?? null,
+          suggestedProductName: evalResult.suggestedProduct?.name ?? null,
+          suggestedProductSku: evalResult.suggestedProduct?.sku ?? null,
+          suggestedProductBarcode: evalResult.suggestedProduct?.barcode ?? null,
+          suggestedProductPrice: evalResult.suggestedProduct?.purchasePrice ?? 0,
+          matchMethod: evalResult.matchMethod,
+          matchConfidence: evalResult.matchConfidence,
+          matchReason: evalResult.matchReason,
+          isLowConfidenceMatch: evalResult.isLowConfidence,
+          manualSelectionRequired: evalResult.manualSelectionRequired,
+          matchedProductId: autoLink ? evalResult.suggestedProduct!.id : (item.matchedProductId ?? null),
+          matchedProductName: autoLink ? evalResult.suggestedProduct!.name : (item.matchedProductName ?? null),
+          matchedProductSku: autoLink ? evalResult.suggestedProduct!.sku : (item.matchedProductSku ?? null),
+        };
       })
     );
+  };
+
+  // Run 4-Tier matching when catalog loads
+  useEffect(() => {
+    if (catalogProducts.length > 0) {
+      runFourTierMatchingOnItems(catalogProducts);
+    }
   }, [catalogProducts]);
 
   const showAlert = (type: 'success' | 'error' | 'info', text: string) => {
@@ -292,6 +318,44 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
         } else if (field === 'barcode') {
           updated.barcode = String(value);
           updated.barcodeFlagged = false;
+        }
+
+        // Re-evaluate 4-tier match immediately if identifier fields change
+        if (
+          (field === 'productName' || field === 'sku' || field === 'barcode') &&
+          catalogProducts.length > 0 &&
+          !updated.manualSelectionCompleted
+        ) {
+          const evalResult = evaluateProductMatchOrder(
+            {
+              productName: updated.productName,
+              sku: updated.sku,
+              barcode: updated.barcode,
+            },
+            catalogProducts
+          );
+
+          updated.suggestedProductId = evalResult.suggestedProduct?.id ?? null;
+          updated.suggestedProductName = evalResult.suggestedProduct?.name ?? null;
+          updated.suggestedProductSku = evalResult.suggestedProduct?.sku ?? null;
+          updated.suggestedProductBarcode = evalResult.suggestedProduct?.barcode ?? null;
+          updated.suggestedProductPrice = evalResult.suggestedProduct?.purchasePrice ?? 0;
+          updated.matchMethod = evalResult.matchMethod;
+          updated.matchConfidence = evalResult.matchConfidence;
+          updated.matchReason = evalResult.matchReason;
+          updated.isLowConfidenceMatch = evalResult.isLowConfidence;
+          updated.manualSelectionRequired = evalResult.manualSelectionRequired;
+
+          // If high confidence, pre-link. If low confidence, clear matchedProductId to enforce manual selection!
+          if (!evalResult.isLowConfidence && evalResult.suggestedProduct) {
+            updated.matchedProductId = evalResult.suggestedProduct.id;
+            updated.matchedProductName = evalResult.suggestedProduct.name;
+            updated.matchedProductSku = evalResult.suggestedProduct.sku;
+          } else {
+            updated.matchedProductId = null;
+            updated.matchedProductName = null;
+            updated.matchedProductSku = null;
+          }
         }
 
         // Update overall item review flag if all specific flags cleared
@@ -382,6 +446,7 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
     setProductSearchQuery(item.sku || item.productName || '');
   };
 
+  // Select a product from manual search in catalog
   const handleSelectMatchedProduct = (product: Product) => {
     if (!matchingModalItem) return;
 
@@ -393,7 +458,14 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
           matchedProductId: product.id,
           matchedProductName: product.name,
           matchedProductSku: product.sku,
-          // If item's SKU or barcode was missing or uncertain, enrich from matched product
+          matchMethod: 'MANUAL_SELECTION',
+          matchConfidence: 100,
+          matchReason: `Manually selected from catalog by user`,
+          isLowConfidenceMatch: false,
+          manualSelectionRequired: false,
+          manualSelectionCompleted: true,
+          userConfirmedNewProduct: false,
+          // Enrich missing SKU or barcode if needed
           sku: it.sku && it.sku !== 'Missing' && it.sku !== 'SKU-UNRESOLVED' ? it.sku : product.sku,
           barcode:
             it.barcode && it.barcode !== 'Not detected' && it.barcode !== 'Missing / Illegible'
@@ -405,8 +477,62 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
     );
     setMatchingModalItem(null);
     setHasUnsavedChanges(true);
+    showAlert('success', `Matched line item to '${product.name}' (SKU: ${product.sku}).`);
   };
 
+  // Accept the suggested product from the 4-tier engine
+  const handleAcceptSuggestion = (itemId: string) => {
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== itemId) return it;
+        if (!it.suggestedProductId) return it;
+        return {
+          ...it,
+          matchedProductId: it.suggestedProductId,
+          matchedProductName: it.suggestedProductName ?? null,
+          matchedProductSku: it.suggestedProductSku ?? null,
+          manualSelectionCompleted: true,
+          manualSelectionRequired: false,
+          isLowConfidenceMatch: false,
+          userConfirmedNewProduct: false,
+          userModified: true,
+        };
+      })
+    );
+    if (matchingModalItem?.id === itemId) {
+      setMatchingModalItem(null);
+    }
+    setHasUnsavedChanges(true);
+    showAlert('success', 'Accepted suggested product match.');
+  };
+
+  // Explicitly confirm creating a new product in the catalog
+  // (Requirement: Do not automatically create a new product without user confirmation)
+  const handleConfirmNewProduct = (itemId: string) => {
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== itemId) return it;
+        return {
+          ...it,
+          matchedProductId: null,
+          matchedProductName: null,
+          matchedProductSku: null,
+          userConfirmedNewProduct: true,
+          manualSelectionCompleted: true,
+          manualSelectionRequired: false,
+          isLowConfidenceMatch: false,
+          userModified: true,
+        };
+      })
+    );
+    if (matchingModalItem?.id === itemId) {
+      setMatchingModalItem(null);
+    }
+    setHasUnsavedChanges(true);
+    showAlert('info', 'Confirmed: Item will be created as a new catalog product upon invoice confirmation.');
+  };
+
+  // Clear matched product
   const handleClearMatch = (itemId: string) => {
     setItems((prev) =>
       prev.map((it) => {
@@ -416,6 +542,9 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
           matchedProductId: null,
           matchedProductName: null,
           matchedProductSku: null,
+          manualSelectionCompleted: false,
+          manualSelectionRequired: true,
+          userConfirmedNewProduct: false,
           userModified: true,
         };
       })
@@ -439,22 +568,55 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
   );
 
   const ignoredItemsCount = useMemo(() => items.filter((it) => it.ignored).length, [items]);
+
+  // Product Matching Metrics
+  const highConfidenceCount = useMemo(
+    () =>
+      items.filter(
+        (it) => !it.ignored && Boolean(it.matchedProductId) && (it.matchConfidence ?? 100) >= 75
+      ).length,
+    [items]
+  );
+
+  const lowConfidenceCount = useMemo(
+    () =>
+      items.filter(
+        (it) =>
+          !it.ignored &&
+          (it.isLowConfidenceMatch || (it.matchConfidence !== undefined && it.matchConfidence < 75)) &&
+          !it.matchedProductId &&
+          !it.userConfirmedNewProduct
+      ).length,
+    [items]
+  );
+
   const unmatchedItemsCount = useMemo(
-    () => items.filter((it) => !it.ignored && !it.matchedProductId).length,
+    () => items.filter((it) => !it.ignored && !it.matchedProductId && !it.userConfirmedNewProduct).length,
+    [items]
+  );
+
+  const confirmedNewProductsCount = useMemo(
+    () => items.filter((it) => !it.ignored && !it.matchedProductId && it.userConfirmedNewProduct).length,
     [items]
   );
 
   // Active items requiring explicit verification for Step 4 of confirmation:
   // - Items with low OCR confidence (< 75%)
   // - Items flagged for review
-  // - Unmatched items (new product candidates)
+  // - Items with low match confidence (< 75%) and unconfirmed
+  // - Unmatched items without explicit user confirmation as new product
   // - Items with field-level uncertainty flags
   const uncertainActiveItems = useMemo(() => {
     return items.filter((it) => {
       if (it.ignored) return false;
       if (it.flaggedForReview) return true;
       if (it.confidence < 75) return true;
-      if (!it.matchedProductId) return true;
+      // Low match confidence (< 75%) requires manual selection or explicit approval
+      if (it.isLowConfidenceMatch || (it.matchConfidence !== undefined && it.matchConfidence < 75)) {
+        if (!it.manualSelectionCompleted && !it.uncertainMatchConfirmed) return true;
+      }
+      // Unmatched items require explicit user confirmation to create as new product
+      if (!it.matchedProductId && !it.userConfirmedNewProduct) return true;
       if (it.productNameFlagged || it.skuFlagged || it.barcodeFlagged) return true;
       return false;
     });
@@ -467,9 +629,17 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
       if (itemFilter === 'UNCERTAIN' && (it.ignored || (!it.flaggedForReview && it.confidence >= 75))) {
         return false;
       }
+      if (
+        itemFilter === 'LOW_CONFIDENCE' &&
+        (it.ignored || (!it.isLowConfidenceMatch && (it.matchConfidence === undefined || it.matchConfidence >= 75)))
+      ) {
+        return false;
+      }
       if (itemFilter === 'ACTIVE' && it.ignored) return false;
       if (itemFilter === 'IGNORED' && !it.ignored) return false;
-      if (itemFilter === 'UNMATCHED' && (it.ignored || Boolean(it.matchedProductId))) return false;
+      if (itemFilter === 'UNMATCHED' && (it.ignored || Boolean(it.matchedProductId) || it.userConfirmedNewProduct)) {
+        return false;
+      }
 
       // Search query
       if (searchQuery.trim()) {
@@ -478,7 +648,8 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
         const matchesSku = it.sku.toLowerCase().includes(q);
         const matchesBarcode = it.barcode.toLowerCase().includes(q);
         const matchesMatched = it.matchedProductName?.toLowerCase().includes(q);
-        if (!matchesName && !matchesSku && !matchesBarcode && !matchesMatched) return false;
+        const matchesSuggested = it.suggestedProductName?.toLowerCase().includes(q);
+        if (!matchesName && !matchesSku && !matchesBarcode && !matchesMatched && !matchesSuggested) return false;
       }
 
       return true;
@@ -506,6 +677,13 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
           matchedProductId: it.matchedProductId,
           matchedProductName: it.matchedProductName,
           matchedProductSku: it.matchedProductSku,
+          matchMethod: it.matchMethod,
+          matchConfidence: it.matchConfidence,
+          matchReason: it.matchReason,
+          isLowConfidenceMatch: it.isLowConfidenceMatch,
+          manualSelectionRequired: it.manualSelectionRequired,
+          manualSelectionCompleted: it.manualSelectionCompleted,
+          userConfirmedNewProduct: it.userConfirmedNewProduct,
           ignored: it.ignored,
           userModified: it.userModified,
           uncertainMatchConfirmed: confirmUncertainMatchesChecked || verifiedItemIds.has(it.id),
@@ -546,6 +724,13 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
           matchedProductId: it.matchedProductId,
           matchedProductName: it.matchedProductName,
           matchedProductSku: it.matchedProductSku,
+          matchMethod: it.matchMethod,
+          matchConfidence: it.matchConfidence,
+          matchReason: it.matchReason,
+          isLowConfidenceMatch: it.isLowConfidenceMatch,
+          manualSelectionRequired: it.manualSelectionRequired,
+          manualSelectionCompleted: it.manualSelectionCompleted,
+          userConfirmedNewProduct: it.userConfirmedNewProduct,
           ignored: it.ignored,
           userModified: it.userModified,
           uncertainMatchConfirmed: confirmUncertainMatchesChecked || verifiedItemIds.has(it.id),
@@ -558,6 +743,7 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
       const result = await confirmInvoice(invoice.id, {
         confirmedUncertainMatches: confirmUncertainMatchesChecked || uncertainActiveItems.length === 0,
         simulateFailure: simulateRollbackFailure,
+        confirmedNewProductItemIds: items.filter((it) => it.userConfirmedNewProduct).map((it) => it.id),
       });
 
       setConfirmationResult(result);
@@ -948,17 +1134,92 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
         </div>
       </div>
 
+      {/* 4-TIER PRODUCT MATCHING ENGINE STATUS BANNER */}
+      <div className="bg-gradient-to-r from-stone-900 via-stone-850 to-stone-900 border border-stone-800 rounded-xl p-4 text-white shadow-xs">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono text-[10px] uppercase font-bold tracking-wider">
+                Matching Order
+              </span>
+              <h3 className="text-xs font-bold text-white flex items-center gap-1.5">
+                <span>4-Tier Product Matching Engine:</span>
+              </h3>
+              <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-stone-300 font-mono">
+                <span className="bg-stone-800 px-1.5 py-0.5 rounded border border-stone-700">1. Barcode</span>
+                <span className="text-stone-500">➔</span>
+                <span className="bg-stone-800 px-1.5 py-0.5 rounded border border-stone-700">2. SKU</span>
+                <span className="text-stone-500">➔</span>
+                <span className="bg-stone-800 px-1.5 py-0.5 rounded border border-stone-700">3. Exact Name</span>
+                <span className="text-stone-500">➔</span>
+                <span className="bg-stone-800 px-1.5 py-0.5 rounded border border-stone-700">4. Fuzzy Name</span>
+              </div>
+            </div>
+            <p className="text-[11px] text-stone-300 leading-relaxed max-w-3xl">
+              Strict matching precedence. High confidence (&ge; 75%) items auto-link. Low confidence items require manual
+              selection. New products are never created automatically without explicit user confirmation.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => runFourTierMatchingOnItems(catalogProducts)}
+              disabled={loadingProducts}
+              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors shadow-xs"
+              title="Re-run 4-tier matching sequence across all line items"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-emerald-200" />
+              <span>Run 4-Tier Auto-Match</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Engine Match Metrics Badges */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-3 mt-3 border-t border-stone-800 text-xs">
+          <div className="bg-stone-800/80 border border-stone-700/80 rounded-lg p-2">
+            <div className="text-[10px] text-stone-400 font-medium">High Confidence Matches</div>
+            <div className="text-emerald-400 font-bold text-sm font-mono mt-0.5">
+              {highConfidenceCount} <span className="text-[10px] font-normal text-stone-400 font-sans">(&ge; 75%)</span>
+            </div>
+          </div>
+
+          <div className="bg-stone-800/80 border border-stone-700/80 rounded-lg p-2">
+            <div className="text-[10px] text-amber-300 font-medium">Low Confidence (&lt; 75%)</div>
+            <div className="text-amber-400 font-bold text-sm font-mono mt-0.5">
+              {lowConfidenceCount}{' '}
+              <span className="text-[10px] font-normal text-amber-300/80 font-sans">· Manual Selection Required</span>
+            </div>
+          </div>
+
+          <div className="bg-stone-800/80 border border-stone-700/80 rounded-lg p-2">
+            <div className="text-[10px] text-stone-400 font-medium">Unmatched Items</div>
+            <div className="text-stone-200 font-bold text-sm font-mono mt-0.5">
+              {unmatchedItemsCount}{' '}
+              <span className="text-[10px] font-normal text-stone-400 font-sans">· Awaiting Choice</span>
+            </div>
+          </div>
+
+          <div className="bg-stone-800/80 border border-stone-700/80 rounded-lg p-2">
+            <div className="text-[10px] text-blue-300 font-medium">Confirmed New Products</div>
+            <div className="text-blue-300 font-bold text-sm font-mono mt-0.5">
+              {confirmedNewProductsCount}{' '}
+              <span className="text-[10px] font-normal text-stone-400 font-sans">· Explicitly Approved</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* LINE ITEMS REVIEW GRID */}
       <div className="bg-white border border-stone-200 rounded-xl overflow-hidden shadow-xs">
         {/* Table Controls Bar */}
         <div className="p-4 bg-stone-50 border-b border-stone-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-xs font-bold uppercase tracking-wider text-stone-700 flex items-center gap-2">
               <span>Extracted Line Items ({items.length})</span>
             </h2>
 
             {/* Filter buttons */}
-            <div className="flex items-center gap-1 bg-stone-200/70 p-1 rounded-lg text-[11px]">
+            <div className="flex items-center gap-1 bg-stone-200/70 p-1 rounded-lg text-[11px] flex-wrap">
               <button
                 onClick={() => setItemFilter('ALL')}
                 className={`px-2.5 py-1 rounded-md font-medium cursor-pointer transition-colors ${
@@ -971,6 +1232,17 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
               </button>
 
               <button
+                onClick={() => setItemFilter('LOW_CONFIDENCE')}
+                className={`px-2.5 py-1 rounded-md font-medium cursor-pointer transition-colors ${
+                  itemFilter === 'LOW_CONFIDENCE'
+                    ? 'bg-amber-100 shadow-2xs text-amber-900 font-bold ring-1 ring-amber-300'
+                    : 'text-stone-600 hover:text-amber-800'
+                }`}
+              >
+                Low Confidence ({lowConfidenceCount})
+              </button>
+
+              <button
                 onClick={() => setItemFilter('UNCERTAIN')}
                 className={`px-2.5 py-1 rounded-md font-medium cursor-pointer transition-colors ${
                   itemFilter === 'UNCERTAIN'
@@ -978,7 +1250,7 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
                     : 'text-stone-600 hover:text-stone-900'
                 }`}
               >
-                Uncertain ({uncertainItemsCount})
+                Uncertain OCR ({uncertainItemsCount})
               </button>
 
               <button
@@ -1041,7 +1313,7 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
                 <th className="py-2.5 px-3 w-20 text-right">Quantity</th>
                 <th className="py-2.5 px-3 w-24 text-right">Unit Price</th>
                 <th className="py-2.5 px-3 w-24 text-right">Line Total</th>
-                <th className="py-2.5 px-3 min-w-[170px]">Catalog Match</th>
+                <th className="py-2.5 px-3 min-w-[290px]">Catalog Match & Suggestions (4-Tier)</th>
                 <th className="py-2.5 px-3 w-24 text-center">Status / Actions</th>
               </tr>
             </thead>
@@ -1238,14 +1510,15 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
                         </div>
                       </td>
 
-                      {/* MATCH PRODUCT */}
+                      {/* MATCH PRODUCT & 4-TIER SUGGESTIONS */}
                       <td className="py-3 px-3">
-                        <div className="space-y-1">
+                        <div className="space-y-1.5">
+                          {/* Case 1: Item is actively matched to catalog product */}
                           {it.matchedProductId ? (
-                            <div className="p-1.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-900 text-[11px] space-y-1">
+                            <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-950 text-[11px] space-y-1.5 shadow-2xs">
                               <div className="flex items-center justify-between gap-1">
-                                <span className="font-semibold truncate flex items-center gap-1">
-                                  <Check className="w-3 h-3 text-emerald-600 shrink-0" />
+                                <span className="font-bold truncate flex items-center gap-1.5 text-emerald-900">
+                                  <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                                   <span className="truncate">{it.matchedProductName}</span>
                                 </span>
                                 {!isConfirmed && (
@@ -1254,36 +1527,142 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
                                     title="Unlink product match"
                                     className="text-stone-400 hover:text-rose-600 cursor-pointer p-0.5"
                                   >
-                                    <Unlink className="w-3 h-3" />
+                                    <Unlink className="w-3.5 h-3.5" />
                                   </button>
                                 )}
                               </div>
-                              <div className="flex items-center justify-between text-[10px] text-emerald-700 font-mono">
+
+                              <div className="flex items-center justify-between gap-1 text-[10px] text-emerald-800 font-mono">
                                 <span>SKU: {it.matchedProductSku}</span>
-                                {!isConfirmed && (
+                                <span className="px-1.5 py-0.2 rounded font-bold text-[9.5px] bg-emerald-200/80 text-emerald-900">
+                                  {it.matchMethod === 'BARCODE'
+                                    ? '100% Barcode (Tier 1)'
+                                    : it.matchMethod === 'SKU'
+                                    ? '95% SKU (Tier 2)'
+                                    : it.matchMethod === 'EXACT_NAME'
+                                    ? '90% Exact Name (Tier 3)'
+                                    : it.matchMethod === 'FUZZY_NAME'
+                                    ? `${it.matchConfidence ?? 80}% Fuzzy (Tier 4)`
+                                    : 'Manual Match'}
+                                </span>
+                              </div>
+
+                              {it.matchReason && (
+                                <div className="text-[9.5px] text-emerald-700 leading-tight truncate" title={it.matchReason}>
+                                  {it.matchReason}
+                                </div>
+                              )}
+
+                              {!isConfirmed && (
+                                <div className="pt-0.5 border-t border-emerald-100 flex items-center justify-end">
                                   <button
                                     onClick={() => handleOpenMatchingModal(it)}
-                                    className="text-emerald-800 underline font-sans text-[10px] cursor-pointer"
+                                    className="text-emerald-800 hover:underline font-sans text-[10px] font-semibold cursor-pointer flex items-center gap-1"
                                   >
-                                    Change
+                                    <Edit3 className="w-2.5 h-2.5" />
+                                    <span>Change Match</span>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          ) : it.suggestedProductId ? (
+                            /* Case 2: 4-Tier engine suggested a candidate, but confidence is low (< 75%) */
+                            /* Requirement: If confidence is low, require manual selection */
+                            <div className="p-2 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 text-[11px] space-y-1.5 shadow-2xs">
+                              <div className="flex items-start justify-between gap-1">
+                                <div>
+                                  <div className="text-[10px] uppercase font-bold tracking-wider text-amber-800 flex items-center gap-1">
+                                    <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" />
+                                    <span>Low Confidence Match ({it.matchConfidence ?? 65}%)</span>
+                                  </div>
+                                  <div className="font-semibold text-stone-900 mt-0.5 truncate" title={it.suggestedProductName || ''}>
+                                    Suggested: {it.suggestedProductName}
+                                  </div>
+                                </div>
+                                <span className="px-1.5 py-0.2 rounded font-mono font-bold text-[9px] bg-amber-200 text-amber-900 shrink-0">
+                                  Tier 4 Fuzzy
+                                </span>
+                              </div>
+
+                              <div className="text-[9.5px] text-amber-800 leading-tight">
+                                Manual selection required. Automatic linking is restricted.
+                              </div>
+
+                              {!isConfirmed && !it.ignored && (
+                                <div className="pt-1 border-t border-amber-200 flex items-center gap-1.5">
+                                  <button
+                                    onClick={() => handleOpenMatchingModal(it)}
+                                    className="flex-1 py-1 px-1.5 rounded bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold text-center cursor-pointer transition-colors"
+                                  >
+                                    Select Product
+                                  </button>
+                                  <button
+                                    onClick={() => handleAcceptSuggestion(it.id)}
+                                    className="py-1 px-1.5 rounded bg-white hover:bg-amber-100 border border-amber-300 text-amber-900 text-[10px] font-semibold cursor-pointer transition-colors"
+                                    title="Accept this suggested candidate"
+                                  >
+                                    Accept
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          ) : it.userConfirmedNewProduct ? (
+                            /* Case 3: User explicitly confirmed creating as new product */
+                            /* Requirement: Do not automatically create a new product without user confirmation */
+                            <div className="p-2 rounded-lg bg-blue-50 border border-blue-200 text-blue-950 text-[11px] space-y-1">
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="font-bold flex items-center gap-1 text-blue-900 text-[10.5px]">
+                                  <Sparkles className="w-3 h-3 text-blue-600 shrink-0" />
+                                  <span>Confirmed New Product</span>
+                                </span>
+                                {!isConfirmed && (
+                                  <button
+                                    onClick={() => handleClearMatch(it.id)}
+                                    className="text-stone-400 hover:text-stone-600 text-[10px] cursor-pointer"
+                                  >
+                                    Clear
                                   </button>
                                 )}
                               </div>
-                            </div>
-                          ) : (
-                            <div>
-                              {!isConfirmed && !it.ignored ? (
+                              <p className="text-[9.5px] text-blue-700">
+                                Will create new catalog product upon invoice confirmation (SKU: {it.sku || 'Auto-catalog'}).
+                              </p>
+                              {!isConfirmed && (
                                 <button
                                   onClick={() => handleOpenMatchingModal(it)}
-                                  className="w-full py-1.5 px-2 rounded-md border border-dashed border-stone-300 hover:border-emerald-500 bg-stone-50 hover:bg-emerald-50/50 text-stone-700 hover:text-emerald-900 text-[11px] font-medium flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                                  className="text-[10px] text-blue-800 underline font-semibold cursor-pointer"
                                 >
-                                  <Link2 className="w-3 h-3 text-stone-500" />
-                                  <span>Match Catalog Product</span>
+                                  Match to existing instead
                                 </button>
-                              ) : (
-                                <span className="text-[11px] text-stone-400 italic">
-                                  {it.ignored ? 'Ignored item' : 'Unmatched'}
-                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            /* Case 4: Unmatched item */
+                            /* Requirement: Do not automatically create without confirmation */
+                            <div className="p-2 rounded-lg bg-stone-50 border border-dashed border-stone-300 text-stone-700 text-[11px] space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <span className="font-semibold text-stone-600 text-[10.5px]">No Catalog Match (0%)</span>
+                                <span className="text-[9px] font-mono text-stone-400">Tier 0</span>
+                              </div>
+                              <p className="text-[9.5px] text-stone-500 leading-tight">
+                                Item not found. Manual selection or explicit new product confirmation required.
+                              </p>
+                              {!isConfirmed && !it.ignored && (
+                                <div className="flex items-center gap-1 pt-0.5">
+                                  <button
+                                    onClick={() => handleOpenMatchingModal(it)}
+                                    className="flex-1 py-1 px-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold text-center cursor-pointer transition-colors"
+                                  >
+                                    Select Product
+                                  </button>
+                                  <button
+                                    onClick={() => handleConfirmNewProduct(it.id)}
+                                    className="py-1 px-1.5 rounded bg-stone-200 hover:bg-stone-300 text-stone-800 text-[10px] font-semibold cursor-pointer transition-colors"
+                                    title="Explicitly approve creating as new product in catalog"
+                                  >
+                                    Confirm New
+                                  </button>
+                                </div>
                               )}
                             </div>
                           )}
@@ -1437,138 +1816,332 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
         </div>
       </div>
 
-      {/* PRODUCT MATCHING MODAL */}
-      {matchingModalItem && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-2xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full border border-stone-200 overflow-hidden flex flex-col max-h-[85vh]">
-            {/* Modal Header */}
-            <div className="p-4 bg-stone-900 text-white flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-bold flex items-center gap-2">
-                  <Link2 className="w-4 h-4 text-emerald-400" />
-                  <span>Match Line Item to Product Catalog</span>
-                </h3>
-                <p className="text-[11px] text-stone-400 mt-0.5">
-                  Item: <strong className="text-stone-200">{matchingModalItem.productName}</strong> (SKU:{' '}
-                  {matchingModalItem.sku || 'None'})
-                </p>
+      {/* PRODUCT MATCHING MODAL WITH 4-TIER MATCHING ENGINE */}
+      {matchingModalItem && (() => {
+        const modalMatchEval = evaluateProductMatchOrder(matchingModalItem, catalogProducts);
+        const filteredCatalog = catalogProducts.filter((p) => {
+          if (!productSearchQuery.trim()) return true;
+          const q = productSearchQuery.toLowerCase().trim();
+          return (
+            p.name.toLowerCase().includes(q) ||
+            p.sku.toLowerCase().includes(q) ||
+            (p.barcode && p.barcode.toLowerCase().includes(q))
+          );
+        });
+
+        return (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-2xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full border border-stone-200 overflow-hidden flex flex-col max-h-[90vh]">
+              {/* Modal Header */}
+              <div className="p-4 bg-stone-900 text-white flex items-center justify-between shrink-0">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono text-[10px] uppercase font-bold">
+                      Order: 1. Barcode ➔ 2. SKU ➔ 3. Exact Name ➔ 4. Fuzzy Name
+                    </span>
+                  </div>
+                  <h3 className="text-sm font-bold flex items-center gap-2 mt-1">
+                    <Link2 className="w-4 h-4 text-emerald-400" />
+                    <span>4-Tier Product Matching & Manual Selection</span>
+                  </h3>
+                  <p className="text-[11px] text-stone-400 mt-0.5">
+                    Match invoice line item to store inventory or explicitly confirm as a new catalog product.
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => setMatchingModalItem(null)}
+                  className="text-stone-400 hover:text-white p-1 rounded hover:bg-stone-800 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
 
-              <button
-                onClick={() => setMatchingModalItem(null)}
-                className="text-stone-400 hover:text-white p-1 rounded hover:bg-stone-800 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+              {/* Modal Scrollable Body */}
+              <div className="p-4 overflow-y-auto space-y-4 flex-1">
+                {/* 1. SCANNED INVOICE ITEM DETAILS */}
+                <div className="p-3 bg-stone-50 border border-stone-200 rounded-lg space-y-2">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-bold text-stone-700 uppercase tracking-wider text-[10px]">
+                      Scanned Invoice Line Item
+                    </span>
+                    <span className="font-mono text-stone-500 bg-white px-2 py-0.5 rounded border border-stone-200 text-[10px]">
+                      OCR Confidence: {matchingModalItem.confidence}%
+                    </span>
+                  </div>
 
-            {/* Search Catalog Input */}
-            <div className="p-4 bg-stone-50 border-b border-stone-200 space-y-2">
-              <div className="relative">
-                <Search className="w-4 h-4 absolute left-3 top-2.5 text-stone-400" />
-                <input
-                  type="text"
-                  value={productSearchQuery}
-                  onChange={(e) => setProductSearchQuery(e.target.value)}
-                  placeholder="Search catalog by product name, SKU, or barcode..."
-                  className="w-full pl-9 pr-3 py-2 text-xs rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                />
-              </div>
-
-              <p className="text-[10.5px] text-stone-500">
-                Selecting a product links this invoice line item to the inventory system. Upon confirmation, stock will
-                be added to the matched product.
-              </p>
-            </div>
-
-            {/* Catalog List */}
-            <div className="p-4 overflow-y-auto space-y-2 flex-1">
-              {loadingProducts ? (
-                <div className="py-12 text-center text-xs text-stone-400">Loading catalog products...</div>
-              ) : (
-                (() => {
-                  const filtered = catalogProducts.filter((p) => {
-                    if (!productSearchQuery.trim()) return true;
-                    const q = productSearchQuery.toLowerCase().trim();
-                    return (
-                      p.name.toLowerCase().includes(q) ||
-                      p.sku.toLowerCase().includes(q) ||
-                      (p.barcode && p.barcode.toLowerCase().includes(q))
-                    );
-                  });
-
-                  if (filtered.length === 0) {
-                    return (
-                      <div className="py-12 text-center space-y-2">
-                        <Boxes className="w-8 h-8 text-stone-300 mx-auto" />
-                        <div className="text-xs text-stone-500 font-medium">
-                          No matching catalog products found for "{productSearchQuery}"
-                        </div>
-                        <p className="text-[11px] text-stone-400 max-w-sm mx-auto">
-                          If this item is new, you can leave it unmatched. When you confirm the invoice, a new product
-                          record will automatically be created in the catalog.
-                        </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                    <div className="bg-white p-2 rounded border border-stone-200">
+                      <div className="text-[10px] text-stone-400 font-medium">Scanned Name</div>
+                      <div className="font-bold text-stone-900 mt-0.5 truncate" title={matchingModalItem.productName}>
+                        {matchingModalItem.productName}
                       </div>
-                    );
-                  }
+                    </div>
+                    <div className="bg-white p-2 rounded border border-stone-200">
+                      <div className="text-[10px] text-stone-400 font-medium">Scanned SKU / Code</div>
+                      <div className="font-mono font-bold text-stone-900 mt-0.5">
+                        {matchingModalItem.sku || 'None detected'}
+                      </div>
+                    </div>
+                    <div className="bg-white p-2 rounded border border-stone-200">
+                      <div className="text-[10px] text-stone-400 font-medium">Scanned Barcode / UPC</div>
+                      <div className="font-mono font-bold text-stone-900 mt-0.5">
+                        {matchingModalItem.barcode || 'None detected'}
+                      </div>
+                    </div>
+                  </div>
 
-                  return filtered.map((prod) => (
+                  <div className="flex items-center justify-between text-[11px] text-stone-600 px-1 pt-1">
+                    <span>
+                      Unit Cost: <strong>${matchingModalItem.unitPrice.toFixed(2)}</strong> · Quantity: <strong>{matchingModalItem.quantity}</strong>
+                    </span>
+                    <span className="font-mono font-bold text-emerald-800">
+                      Line Total: ${matchingModalItem.total.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 2. 4-TIER MATCH ENGINE EVALUATION & SUGGESTED PRODUCT */}
+                <div
+                  className={`p-3.5 rounded-lg border space-y-3 ${
+                    modalMatchEval.isLowConfidence
+                      ? 'bg-amber-50/70 border-amber-300'
+                      : 'bg-emerald-50/70 border-emerald-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono uppercase ${
+                          modalMatchEval.isLowConfidence
+                            ? 'bg-amber-200 text-amber-900'
+                            : 'bg-emerald-200 text-emerald-900'
+                        }`}
+                      >
+                        {modalMatchEval.tierLabel}
+                      </span>
+                      <span className="text-xs font-bold text-stone-900">
+                        {modalMatchEval.suggestedProduct ? 'Suggested Product Candidate' : 'No Suggested Product'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] font-medium text-stone-600">Match Confidence:</span>
+                      <span
+                        className={`font-mono font-bold text-sm px-2 py-0.5 rounded ${
+                          modalMatchEval.matchConfidence >= 75
+                            ? 'bg-emerald-600 text-white'
+                            : modalMatchEval.matchConfidence > 0
+                            ? 'bg-amber-500 text-white'
+                            : 'bg-stone-300 text-stone-700'
+                        }`}
+                      >
+                        {modalMatchEval.matchConfidence}%
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Visual Confidence Progress Bar */}
+                  <div className="w-full bg-stone-200 rounded-full h-2 overflow-hidden">
                     <div
-                      key={prod.id}
-                      onClick={() => handleSelectMatchedProduct(prod)}
-                      className={`p-3 rounded-lg border transition-all cursor-pointer flex items-center justify-between ${
-                        matchingModalItem.matchedProductId === prod.id
-                          ? 'border-emerald-500 bg-emerald-50/70 shadow-xs'
-                          : 'border-stone-200 bg-white hover:border-emerald-400 hover:bg-stone-50'
+                      className={`h-2 transition-all ${
+                        modalMatchEval.matchConfidence >= 75
+                          ? 'bg-emerald-600'
+                          : modalMatchEval.matchConfidence > 0
+                          ? 'bg-amber-500'
+                          : 'bg-stone-400'
                       }`}
-                    >
-                      <div className="space-y-0.5">
-                        <div className="font-bold text-xs text-stone-900 flex items-center gap-2">
-                          <span>{prod.name}</span>
-                          <span className="font-mono text-[10px] text-stone-500 bg-stone-100 px-1.5 py-0.2 rounded">
-                            {prod.sku}
+                      style={{ width: `${Math.max(4, modalMatchEval.matchConfidence)}%` }}
+                    />
+                  </div>
+
+                  {/* Match Reason Text */}
+                  <div className="text-[11px] text-stone-700 bg-white/80 p-2 rounded border border-stone-200/80">
+                    <strong>Engine Result:</strong> {modalMatchEval.matchReason}
+                  </div>
+
+                  {/* Suggested Product Card (if candidate found) */}
+                  {modalMatchEval.suggestedProduct && (
+                    <div className="bg-white p-3 rounded-lg border border-stone-200 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="font-bold text-xs text-stone-900 flex items-center gap-2">
+                            <span>{modalMatchEval.suggestedProduct.name}</span>
+                            <span className="font-mono text-[10px] bg-stone-100 text-stone-600 px-1.5 py-0.2 rounded">
+                              SKU: {modalMatchEval.suggestedProduct.sku}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-stone-500 mt-0.5 flex items-center gap-3 flex-wrap">
+                            {modalMatchEval.suggestedProduct.barcode && (
+                              <span>UPC: {modalMatchEval.suggestedProduct.barcode}</span>
+                            )}
+                            {modalMatchEval.suggestedProduct.categoryName && (
+                              <span>Category: {modalMatchEval.suggestedProduct.categoryName}</span>
+                            )}
+                            <span>Catalog Cost: ${modalMatchEval.suggestedProduct.purchasePrice.toFixed(2)}</span>
+                            <span>Unit: {modalMatchEval.suggestedProduct.unit}</span>
+                          </div>
+                        </div>
+
+                        {/* Button to accept suggested product */}
+                        <button
+                          type="button"
+                          onClick={() => handleSelectMatchedProduct(modalMatchEval.suggestedProduct!)}
+                          className={`px-3 py-1.5 rounded text-xs font-bold shrink-0 cursor-pointer transition-colors ${
+                            modalMatchEval.matchConfidence >= 75
+                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs'
+                              : 'bg-amber-600 hover:bg-amber-700 text-white'
+                          }`}
+                        >
+                          {modalMatchEval.matchConfidence >= 75
+                            ? '✓ Accept Suggested Match'
+                            : 'Accept Suggestion (Override)'}
+                        </button>
+                      </div>
+
+                      {modalMatchEval.isLowConfidence && (
+                        <div className="text-[10.5px] text-amber-800 bg-amber-50 p-2 rounded border border-amber-200 flex items-center gap-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span>
+                            <strong>Low Confidence Rule:</strong> Fuzzy similarity is below 75%. Manual selection from
+                            the catalog below is recommended to avoid linking the wrong inventory item.
                           </span>
                         </div>
+                      )}
+                    </div>
+                  )}
+                </div>
 
-                        <div className="text-[11px] text-stone-500 flex items-center gap-3">
-                          {prod.barcode && <span>UPC: {prod.barcode}</span>}
-                          {prod.categoryName && <span>Category: {prod.categoryName}</span>}
-                          <span>Unit: {prod.unit}</span>
-                          <span>Purchase Price: ${prod.purchasePrice.toFixed(2)}</span>
+                {/* 3. MANUAL PRODUCT SELECTION FROM STORE CATALOG */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs font-bold text-stone-800">
+                    <span className="flex items-center gap-1.5">
+                      <Search className="w-3.5 h-3.5 text-stone-500" />
+                      <span>Manual Selection from Store Catalog ({catalogProducts.length} items)</span>
+                    </span>
+                    <span className="text-[11px] font-normal text-stone-500">
+                      Search by name, SKU, or UPC barcode
+                    </span>
+                  </div>
+
+                  <div className="relative">
+                    <Search className="w-4 h-4 absolute left-3 top-2.5 text-stone-400" />
+                    <input
+                      type="text"
+                      value={productSearchQuery}
+                      onChange={(e) => setProductSearchQuery(e.target.value)}
+                      placeholder="Type to filter catalog by product name, SKU, or barcode..."
+                      className="w-full pl-9 pr-3 py-2 text-xs rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    />
+                  </div>
+
+                  {/* Catalog List */}
+                  <div className="max-h-48 overflow-y-auto space-y-1.5 border border-stone-200 rounded-lg p-2 bg-stone-50/50">
+                    {loadingProducts ? (
+                      <div className="py-8 text-center text-xs text-stone-400">Loading catalog products...</div>
+                    ) : filteredCatalog.length === 0 ? (
+                      <div className="py-8 text-center space-y-1">
+                        <Boxes className="w-6 h-6 text-stone-300 mx-auto" />
+                        <div className="text-xs text-stone-500 font-medium">
+                          No catalog products found matching "{productSearchQuery}"
                         </div>
                       </div>
+                    ) : (
+                      filteredCatalog.map((prod) => (
+                        <div
+                          key={prod.id}
+                          onClick={() => handleSelectMatchedProduct(prod)}
+                          className={`p-2.5 rounded-lg border transition-all cursor-pointer flex items-center justify-between ${
+                            matchingModalItem.matchedProductId === prod.id
+                              ? 'border-emerald-500 bg-emerald-50/80 shadow-2xs'
+                              : 'border-stone-200 bg-white hover:border-emerald-400 hover:bg-emerald-50/30'
+                          }`}
+                        >
+                          <div className="space-y-0.5">
+                            <div className="font-bold text-xs text-stone-900 flex items-center gap-2">
+                              <span>{prod.name}</span>
+                              <span className="font-mono text-[10px] text-stone-500 bg-stone-100 px-1.5 py-0.2 rounded">
+                                {prod.sku}
+                              </span>
+                            </div>
+                            <div className="text-[10.5px] text-stone-500 flex items-center gap-3">
+                              {prod.barcode && <span>UPC: {prod.barcode}</span>}
+                              {prod.categoryName && <span>Category: {prod.categoryName}</span>}
+                              <span>Cost: ${prod.purchasePrice.toFixed(2)}</span>
+                            </div>
+                          </div>
 
-                      <button
-                        type="button"
-                        className="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer shrink-0"
-                      >
-                        Select Match
-                      </button>
+                          <button
+                            type="button"
+                            className="px-2.5 py-1 rounded bg-stone-800 hover:bg-emerald-600 text-white text-[11px] font-semibold cursor-pointer shrink-0 transition-colors"
+                          >
+                            Select Product
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* 4. EXPLICIT NEW PRODUCT CREATION CONFIRMATION */}
+                {/* Requirement: Do not automatically create a new product without user confirmation */}
+                <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-lg space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="font-bold text-xs text-blue-950 flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-blue-600" />
+                      <span>Item Not in Catalog? Confirm as New Product</span>
                     </div>
-                  ));
-                })()
-              )}
-            </div>
+                    <span className="text-[10px] text-blue-800 font-semibold bg-blue-100 px-2 py-0.5 rounded">
+                      User Confirmation Required
+                    </span>
+                  </div>
 
-            {/* Modal Footer */}
-            <div className="p-3 bg-stone-50 border-t border-stone-200 flex items-center justify-between">
-              <button
-                onClick={() => handleClearMatch(matchingModalItem.id)}
-                className="text-stone-500 hover:text-rose-600 text-xs font-semibold cursor-pointer"
-              >
-                Clear / Leave Unmatched
-              </button>
+                  <p className="text-[11px] text-blue-900 leading-relaxed">
+                    To prevent accidental duplicates, products are <strong>never created automatically</strong>. If this
+                    line item is genuinely new, explicitly confirm it below. It will be added to the catalog upon invoice
+                    confirmation.
+                  </p>
 
-              <button
-                onClick={() => setMatchingModalItem(null)}
-                className="px-4 py-1.5 rounded-lg bg-stone-200 hover:bg-stone-300 text-stone-700 text-xs font-semibold cursor-pointer"
-              >
-                Close
-              </button>
+                  <div className="bg-white p-2.5 rounded border border-blue-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="space-y-0.5">
+                      <div className="font-bold text-stone-900">{matchingModalItem.productName}</div>
+                      <div className="text-[10.5px] text-stone-500 font-mono">
+                        New SKU: {matchingModalItem.sku || `SKU-${matchingModalItem.productName.slice(0, 3).toUpperCase()}-NEW`} · Barcode: {matchingModalItem.barcode || 'None'} · Purchase Price: ${matchingModalItem.unitPrice.toFixed(2)}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleConfirmNewProduct(matchingModalItem.id)}
+                      className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold cursor-pointer transition-colors shrink-0 shadow-xs flex items-center gap-1.5"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-blue-200" />
+                      <span>Confirm as New Catalog Product</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="p-3 bg-stone-50 border-t border-stone-200 flex items-center justify-between shrink-0">
+                <button
+                  onClick={() => handleClearMatch(matchingModalItem.id)}
+                  className="text-stone-500 hover:text-rose-600 text-xs font-semibold cursor-pointer"
+                >
+                  Clear Match / Leave Unmatched
+                </button>
+
+                <button
+                  onClick={() => setMatchingModalItem(null)}
+                  className="px-4 py-1.5 rounded-lg bg-stone-200 hover:bg-stone-300 text-stone-700 text-xs font-semibold cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 10-STEP TRANSACTIONAL CONFIRMATION DIALOG MODAL */}
       {showConfirmModal && (
@@ -1769,22 +2342,52 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
                               }`}
                             >
                               <div className="flex items-start justify-between gap-2">
-                                <div>
+                                <div className="space-y-1">
                                   <div className="font-bold text-stone-900 flex items-center gap-2">
                                     <span>{item.productName}</span>
                                     <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-stone-200 text-stone-700">
                                       OCR: {item.confidence}%
                                     </span>
                                   </div>
-                                  <div className="text-[11px] text-stone-600 mt-0.5">
+
+                                  {/* Matched product / Suggested product / Unmatched status */}
+                                  <div className="text-[11px] space-y-1 mt-1">
                                     {item.matchedProductName ? (
-                                      <span className="text-emerald-800 font-medium">
-                                        Matched to: {item.matchedProductName} (SKU: {item.matchedProductSku})
-                                      </span>
+                                      <div className="text-emerald-900 font-medium flex items-center gap-1.5 bg-emerald-100/70 px-2 py-1 rounded">
+                                        <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                        <span>
+                                          Matched to: <strong>{item.matchedProductName}</strong> (SKU: {item.matchedProductSku})
+                                        </span>
+                                      </div>
+                                    ) : item.suggestedProductName ? (
+                                      <div className="text-amber-900 bg-amber-100/70 px-2 py-1 rounded space-y-0.5">
+                                        <div className="flex items-center gap-1.5 font-bold">
+                                          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                          <span>
+                                            Suggested Product: <strong>{item.suggestedProductName}</strong> (SKU: {item.suggestedProductSku})
+                                          </span>
+                                        </div>
+                                        <div className="text-[10px] text-amber-800">
+                                          Match Confidence: <strong>{item.matchConfidence ?? 65}%</strong> (Tier 4 Fuzzy) · Manual selection required
+                                        </div>
+                                      </div>
+                                    ) : item.userConfirmedNewProduct ? (
+                                      <div className="text-blue-900 bg-blue-100/70 px-2 py-1 rounded flex items-center gap-1.5">
+                                        <Sparkles className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                                        <span>
+                                          Explicitly confirmed to create new product in catalog (SKU: {item.sku || 'Auto-catalog'})
+                                        </span>
+                                      </div>
                                     ) : (
-                                      <span className="text-amber-800 font-medium">
-                                        No existing match · Will catalog as new product (SKU: {item.sku || 'Auto-generated'})
-                                      </span>
+                                      <div className="text-rose-900 bg-rose-100/70 px-2 py-1 rounded space-y-0.5">
+                                        <div className="flex items-center gap-1.5 font-bold">
+                                          <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                                          <span>Unmatched Item (0% Confidence)</span>
+                                        </div>
+                                        <div className="text-[10px] text-rose-800">
+                                          Cannot automatically create without confirmation. Please select from catalog or confirm as new product below.
+                                        </div>
+                                      </div>
                                     )}
                                   </div>
                                 </div>
@@ -1793,9 +2396,9 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
                                   <button
                                     type="button"
                                     onClick={() => handleOpenMatchingModal(item)}
-                                    className="px-2 py-1 rounded border border-stone-300 bg-white hover:bg-stone-50 text-[10px] font-semibold text-stone-700 cursor-pointer"
+                                    className="px-2.5 py-1 rounded border border-stone-300 bg-white hover:bg-stone-50 text-[10px] font-semibold text-stone-700 cursor-pointer"
                                   >
-                                    Change Match
+                                    Review / Change
                                   </button>
                                   <button
                                     type="button"
@@ -1878,8 +2481,16 @@ export const InvoiceReviewScreen: React.FC<InvoiceReviewScreenProps> = ({
                     {[
                       { step: 1, title: 'Validate invoice', desc: 'Checks supplier, date, number format & uniqueness' },
                       { step: 2, title: 'Validate invoice items', desc: 'Verifies positive quantities, prices, and non-empty names' },
-                      { step: 3, title: 'Match each item to a product', desc: 'Matches by Barcode, SKU, Name; prevents duplicates' },
-                      { step: 4, title: 'Require user confirmation for uncertain matches', desc: 'Guarantees user review for low-confidence or new items' },
+                      {
+                        step: 3,
+                        title: 'Match each item to a product',
+                        desc: 'Evaluates in strict order: 1. Barcode ➔ 2. SKU ➔ 3. Exact normalized name ➔ 4. Fuzzy name matching',
+                      },
+                      {
+                        step: 4,
+                        title: 'Require user confirmation for uncertain matches',
+                        desc: 'Requires manual selection for low confidence (< 75%); prohibits automatic new product creation without user confirmation',
+                      },
                       { step: 5, title: 'Create purchase invoice', desc: 'Transitions status to CONFIRMED with timestamp & ledger reference' },
                       { step: 6, title: 'Create invoice items', desc: 'Persists formal purchase invoice line item records' },
                       { step: 7, title: 'Increase inventory', desc: 'Adds purchased quantities to store product inventory balances' },

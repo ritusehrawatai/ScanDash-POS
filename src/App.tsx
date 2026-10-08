@@ -6,6 +6,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
 import { Sidebar, NavTab } from './components/Sidebar';
+import { OwnerDashboard } from './components/Dashboard/OwnerDashboard';
 import { PosTerminal } from './components/PosTerminal/PosTerminal';
 import { ProductList } from './components/ProductManagement/ProductList';
 import { InventoryList } from './components/InventoryManagement/InventoryList';
@@ -18,7 +19,7 @@ import { fetchHealthStatus, HealthCheckResult } from './api/healthApi';
 import { HealthStatus } from './types/health';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<NavTab>('pos');
+  const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [healthData, setHealthData] = useState<HealthStatus | null>(null);
   const [latencyMs, setLatencyMs] = useState<number>(0);
   const [rawJson, setRawJson] = useState<string>('{}');
@@ -70,6 +71,8 @@ export default function App() {
         {/* Dynamic Views */}
         <main className="flex-1 overflow-y-auto p-6">
           <div className="max-w-7xl mx-auto">
+            {activeTab === 'dashboard' && <OwnerDashboard onNavigate={setActiveTab} />}
+
             {activeTab === 'pos' && <PosTerminal />}
 
             {activeTab === 'products' && <ProductList />}
