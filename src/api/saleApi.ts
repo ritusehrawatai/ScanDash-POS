@@ -1,4 +1,5 @@
 import { SaleDto, CreateSalePayload } from '../types/sale';
+import { authFetch } from '../utils/authStorage';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -19,7 +20,7 @@ export class SaleApiError extends Error {
  * POST /api/sales
  */
 export async function processSale(payload: CreateSalePayload): Promise<SaleDto> {
-  const res = await fetch(`${BASE_URL}/api/sales`, {
+  const res = await authFetch(`${BASE_URL}/api/sales`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -48,7 +49,7 @@ export async function processSale(payload: CreateSalePayload): Promise<SaleDto> 
  * GET /api/sales
  */
 export async function fetchAllSales(): Promise<SaleDto[]> {
-  const res = await fetch(`${BASE_URL}/api/sales`, {
+  const res = await authFetch(`${BASE_URL}/api/sales`, {
     headers: { Accept: 'application/json' },
   });
 
@@ -70,7 +71,7 @@ export async function fetchAllSales(): Promise<SaleDto[]> {
  * GET /api/sales/:id
  */
 export async function fetchSaleById(id: number): Promise<SaleDto> {
-  const res = await fetch(`${BASE_URL}/api/sales/${id}`, {
+  const res = await authFetch(`${BASE_URL}/api/sales/${id}`, {
     headers: { Accept: 'application/json' },
   });
 
@@ -92,7 +93,7 @@ export async function fetchSaleById(id: number): Promise<SaleDto> {
  * GET /api/sales/receipt/:receiptNumber
  */
 export async function fetchSaleByReceipt(receiptNumber: string): Promise<SaleDto> {
-  const res = await fetch(`${BASE_URL}/api/sales/receipt/${encodeURIComponent(receiptNumber)}`, {
+  const res = await authFetch(`${BASE_URL}/api/sales/receipt/${encodeURIComponent(receiptNumber)}`, {
     headers: { Accept: 'application/json' },
   });
 

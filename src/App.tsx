@@ -7,6 +7,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
 import { Sidebar, NavTab } from './components/Sidebar';
 import { OwnerDashboard } from './components/Dashboard/OwnerDashboard';
+import { ReportsView } from './components/Reports/ReportsView';
 import { PosTerminal } from './components/PosTerminal/PosTerminal';
 import { ProductList } from './components/ProductManagement/ProductList';
 import { InventoryList } from './components/InventoryManagement/InventoryList';
@@ -15,10 +16,15 @@ import { HealthDashboard } from './components/HealthDashboard';
 import { ArchitectureView } from './components/ArchitectureView';
 import { ApiExplorer } from './components/ApiExplorer';
 import { DevSetupGuide } from './components/DevSetupGuide';
+import { UserManagement } from './components/UserManagement/UserManagement';
+import { RbacRestrictedView } from './components/Auth/RbacRestrictedView';
 import { fetchHealthStatus, HealthCheckResult } from './api/healthApi';
 import { HealthStatus } from './types/health';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { LoginScreen } from './components/Auth/LoginScreen';
 
-export default function App() {
+function PosShell() {
+  const { isAuthenticated, isLoading: authLoading, isCashier, isOwnerOrAdmin, user } = useAuth();
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [healthData, setHealthData] = useState<HealthStatus | null>(null);
   const [latencyMs, setLatencyMs] = useState<number>(0);
@@ -26,6 +32,13 @@ export default function App() {
   const [error, setError] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState<boolean>(true);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
+
+  // If user is a Cashier, auto-route to POS Terminal on initial load or login
+  useEffect(() => {
+    if (isCashier && (activeTab === 'dashboard' || activeTab === 'users' || activeTab === 'reports' || activeTab === 'invoices')) {
+      setActiveTab('pos');
+    }
+  }, [isCashier, user?.id]);
 
   const performHealthCheck = useCallback(async () => {
     setLoading(true);
@@ -50,6 +63,19 @@ export default function App() {
     return () => clearInterval(interval);
   }, [performHealthCheck]);
 
+  if (authLoading) {
+    return (
+      <div className="h-screen w-screen flex flex-col items-center justify-center bg-stone-100 text-stone-600 gap-3">
+        <div className="w-8 h-8 border-3 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+        <span className="text-xs font-medium">Validating security credentials...</span>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginScreen />;
+  }
+
   const isHealthy = !error && healthData?.status === 'UP';
 
   return (
@@ -71,16 +97,59 @@ export default function App() {
         {/* Dynamic Views */}
         <main className="flex-1 overflow-y-auto p-6">
           <div className="max-w-7xl mx-auto">
-            {activeTab === 'dashboard' && <OwnerDashboard onNavigate={setActiveTab} />}
-
+            {/* Cashier allowed: POS Terminal */}
             {activeTab === 'pos' && <PosTerminal />}
 
-            {activeTab === 'products' && <ProductList />}
+            {/* OWNER & ADMIN only views (CASHIER gets RbacRestrictedView) */}
+            {activeTab === 'dashboard' && (
+              isCashier ? (
+                <RbacRestrictedView tabName="Owner Dashboard" onNavigate={setActiveTab} />
+              ) : (
+                <OwnerDashboard onNavigate={setActiveTab} />
+              )
+            )}
 
-            {activeTab === 'inventory' && <InventoryList />}
+            {activeTab === 'reports' && (
+              isCashier ? (
+                <RbacRestrictedView tabName="Reports & Analytics" onNavigate={setActiveTab} />
+              ) : (
+                <ReportsView onNavigate={setActiveTab} />
+              )
+            )}
 
-            {activeTab === 'invoices' && <InvoiceUploadView />}
+            {activeTab === 'products' && (
+              isCashier ? (
+                <RbacRestrictedView tabName="Products & Catalog Management" onNavigate={setActiveTab} />
+              ) : (
+                <ProductList />
+              )
+            )}
 
+            {activeTab === 'inventory' && (
+              isCashier ? (
+                <RbacRestrictedView tabName="Inventory Management & Adjustments" onNavigate={setActiveTab} />
+              ) : (
+                <InventoryList />
+              )
+            )}
+
+            {activeTab === 'invoices' && (
+              isCashier ? (
+                <RbacRestrictedView tabName="Purchase Invoices & OCR" onNavigate={setActiveTab} />
+              ) : (
+                <InvoiceUploadView />
+              )
+            )}
+
+            {activeTab === 'users' && (
+              isCashier ? (
+                <RbacRestrictedView tabName="User & Role Management (RBAC)" onNavigate={setActiveTab} />
+              ) : (
+                <UserManagement />
+              )
+            )}
+
+            {/* Diagnostics and technical info */}
             {activeTab === 'health' && (
               <HealthDashboard
                 data={healthData}
@@ -102,5 +171,13 @@ export default function App() {
         </main>
       </div>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <PosShell />
+    </AuthProvider>
   );
 }

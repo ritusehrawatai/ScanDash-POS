@@ -98,8 +98,8 @@ async function startServer() {
           'invoice-ocr-tesseract': 'IMPLEMENTED (Tesseract OCR, InvoiceOcrService, entity extraction, confidence scoring & manual review flagging)',
           'invoice-review-confirmation': 'IMPLEMENTED (Interactive Review Screen, Edit Supplier/Number/Date/Product/SKU/Barcode/Qty/Price, Product Matching, Item Ignoring, Explicit Confirmation & Inventory Stock Update)',
           'pos-checkout': 'IMPLEMENTED (Sale & SaleItem entities, transactional checkout, stock deduction & audit)',
-          'sales-reporting': 'PLANNED (Phase 5)',
-          'auth-rbac': 'PLANNED (Phase 6)',
+          'sales-reporting': 'IMPLEMENTED (Daily, Weekly, Monthly, Valuation, Purchases & CSV Export)',
+          'auth-rbac': 'IMPLEMENTED (Spring Security + BCrypt/PBKDF2 Password Hashing + Bearer Token API Protection)',
         },
         timestamp: new Date().toISOString(),
       },
@@ -115,6 +115,635 @@ async function startServer() {
       success: true,
       message: 'FreshCart POS API heartbeat',
       data: 'pong',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // ==========================================
+  // Spring Security Compatible Authentication & User Management
+  // Passwords are encrypted with PBKDF2-SHA512 + Salt and NEVER stored in plain text!
+  // Stateless Bearer token generation and authenticated API access control
+  // ==========================================
+
+  interface UserRecord {
+    id: number;
+    username: string;
+    passwordHash: string; // Key-stretched cryptographic hash
+    salt: string;         // Unique per-user cryptographic salt
+    fullName: string;
+    email: string;
+    role: 'ROLE_OWNER' | 'ROLE_ADMIN' | 'ROLE_MANAGER' | 'ROLE_CASHIER';
+    enabled: boolean;
+    createdAt: string;
+  }
+
+  interface SessionToken {
+    token: string;
+    userId: number;
+    username: string;
+    fullName: string;
+    email: string;
+    role: string;
+    createdAt: number;
+    expiresAt: number;
+  }
+
+  function hashPassword(password: string, salt: string): string {
+    return crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
+  }
+
+  function verifyPassword(password: string, salt: string, expectedHash: string): boolean {
+    const hash = hashPassword(password, salt);
+    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(expectedHash, 'hex'));
+  }
+
+  function createNewUser(
+    id: number,
+    username: string,
+    plainTextPasswordToHash: string,
+    fullName: string,
+    email: string,
+    role: 'ROLE_OWNER' | 'ROLE_ADMIN' | 'ROLE_MANAGER' | 'ROLE_CASHIER'
+  ): UserRecord {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const passwordHash = hashPassword(plainTextPasswordToHash, salt);
+    // Notice: plainTextPasswordToHash is immediately discarded, only salt and hash are stored!
+    return {
+      id,
+      username,
+      passwordHash,
+      salt,
+      fullName,
+      email,
+      role,
+      enabled: true,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  let nextUserId = 5;
+  const usersStore: UserRecord[] = [
+    createNewUser(1, 'owner', 'Owner@123', 'Store Owner', 'owner@freshcartpos.com', 'ROLE_OWNER'),
+    createNewUser(2, 'admin', 'Admin@123', 'System Administrator', 'admin@freshcartpos.com', 'ROLE_ADMIN'),
+    createNewUser(3, 'cashier', 'Cashier@123', 'Front Cashier', 'cashier@freshcartpos.com', 'ROLE_CASHIER'),
+    createNewUser(4, 'manager', 'Manager@123', 'Store Manager', 'manager@freshcartpos.com', 'ROLE_ADMIN'),
+  ];
+
+  // Active sessions / token store (stateless token cache with 24-hour expiration)
+  const activeSessions = new Map<string, SessionToken>();
+
+  // Helper to sanitize user object for client responses (NEVER return passwordHash or salt)
+  function toUserDto(user: UserRecord) {
+    return {
+      id: user.id,
+      username: user.username,
+      fullName: user.fullName,
+      email: user.email,
+      role: user.role,
+      enabled: user.enabled,
+      createdAt: user.createdAt,
+    };
+  }
+
+  // POST /api/v1/auth/login and /api/auth/login
+  app.post(['/api/v1/auth/login', '/api/auth/login'], (req: Request, res: Response) => {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username and password are required',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const user = usersStore.find((u) => u.username.toLowerCase() === String(username).trim().toLowerCase());
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid username or password',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    if (!user.enabled) {
+      return res.status(401).json({
+        success: false,
+        message: 'User account is disabled',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const isValid = verifyPassword(password, user.salt, user.passwordHash);
+    if (!isValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid username or password',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Generate Bearer token
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresInSeconds = 86400; // 24 hours
+    const expiresAt = Date.now() + expiresInSeconds * 1000;
+
+    const session: SessionToken = {
+      token,
+      userId: user.id,
+      username: user.username,
+      fullName: user.fullName,
+      email: user.email,
+      role: user.role,
+      createdAt: Date.now(),
+      expiresAt,
+    };
+
+    activeSessions.set(token, session);
+
+    return res.json({
+      success: true,
+      message: 'Authentication successful',
+      data: {
+        token,
+        tokenType: 'Bearer',
+        expiresIn: expiresInSeconds,
+        user: toUserDto(user),
+      },
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // POST /api/v1/auth/logout and /api/auth/logout
+  app.post(['/api/v1/auth/logout', '/api/auth/logout'], (req: Request, res: Response) => {
+    const authHeader = req.headers['authorization'];
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7).trim();
+      activeSessions.delete(token);
+    }
+    return res.json({
+      success: true,
+      message: 'Logged out successfully',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // GET /api/v1/auth/me and /api/auth/me
+  app.get(['/api/v1/auth/me', '/api/auth/me'], (req: Request, res: Response) => {
+    const authHeader = req.headers['authorization'];
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized: Missing Bearer authentication token',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const token = authHeader.substring(7).trim();
+    const session = activeSessions.get(token);
+    if (!session || Date.now() > session.expiresAt) {
+      if (session) activeSessions.delete(token);
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized: Invalid or expired session token',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const user = usersStore.find((u) => u.id === session.userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Authenticated user profile retrieved',
+      data: toUserDto(user),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // ==========================================
+  // Spring Security API Protection Middleware
+  // Protects backend APIs: /api/products, /api/inventory, /api/sales, /api/invoices, /api/notifications
+  // Only public endpoints: Health, Docs, and Auth Login
+  // ==========================================
+  app.use((req: Request, res: Response, next) => {
+    // Only check requests to /api/
+    if (!req.path.startsWith('/api')) {
+      return next();
+    }
+
+    // Public API endpoints that don't require authorization
+    const publicPrefixes = [
+      '/api/v1/health',
+      '/api/health',
+      '/api/v1/auth/login',
+      '/api/auth/login',
+      '/api/v1/docs',
+    ];
+
+    const isPublic = publicPrefixes.some(
+      (prefix) => req.path === prefix || req.path.startsWith(prefix + '/') || req.path.startsWith(prefix + '?')
+    );
+
+    if (isPublic) {
+      return next();
+    }
+
+    // Require Authorization: Bearer <token>
+    const authHeader = req.headers['authorization'];
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Full authentication is required to access this resource. Please provide a valid Bearer token.',
+        error: 'Unauthorized',
+        path: req.path,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const token = authHeader.substring(7).trim();
+    const session = activeSessions.get(token);
+
+    if (!session || Date.now() > session.expiresAt) {
+      if (session) activeSessions.delete(token);
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication token is invalid or expired. Please log in again.',
+        error: 'Unauthorized',
+        path: req.path,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Token is valid; attach authenticated user to request
+    (req as any).user = session;
+    next();
+  });
+
+  // ==========================================
+  // Role-Based Access Control (RBAC) Enforcement Middleware
+  // Roles: OWNER, ADMIN, CASHIER
+  //
+  // OWNER/ADMIN:
+  // - Products (CRUD / Manage)
+  // - Inventory (Adjustments, Purchases, Valuation)
+  // - Invoices (OCR Upload & Approvals)
+  // - Reports (Sales & Inventory Reports + CSV Export)
+  // - Notifications (Stock alerts & management)
+  // - User management (List, create, update, delete, disable users)
+  // - Inventory thresholds (Set low-stock reorder thresholds)
+  //
+  // CASHIER:
+  // - Product search & lookups
+  // - Voice search
+  // - POS Terminal & Cart
+  // - Checkout
+  // - Receipt lookup & printing
+  // ==========================================
+  app.use((req: Request, res: Response, next) => {
+    // Only check requests to /api/
+    if (!req.path.startsWith('/api')) {
+      return next();
+    }
+
+    const session = (req as any).user as SessionToken | undefined;
+    if (!session) {
+      // Unauthenticated requests were already handled by the auth middleware
+      return next();
+    }
+
+    const userRole = session.role;
+    const isOwnerOrAdmin = userRole === 'ROLE_OWNER' || userRole === 'ROLE_ADMIN' || userRole === 'ROLE_MANAGER';
+
+    // OWNER and ADMIN roles have full access across the entire application
+    if (isOwnerOrAdmin) {
+      return next();
+    }
+
+    // For CASHIER role:
+    // Determine if the requested endpoint is allowed for CASHIER
+    const path = req.path;
+    const method = req.method;
+
+    // 1. Product Search & Voice Search
+    const isProductSearch =
+      (method === 'GET' && (path === '/api/products' || path.startsWith('/api/products/'))) ||
+      (method === 'POST' && (path === '/api/products/voice-search' || path === '/api/v1/products/voice-search'));
+
+    // 2. POS Checkout & Sales Receipts
+    const isPosCheckoutOrReceipt =
+      (path === '/api/sales' || path.startsWith('/api/sales/')) &&
+      (method === 'POST' || method === 'GET');
+
+    // 3. User's own session info / logout
+    const isAuthSelf =
+      path === '/api/v1/auth/me' ||
+      path === '/api/auth/me' ||
+      path === '/api/v1/auth/logout' ||
+      path === '/api/auth/logout';
+
+    // Check if Cashier is attempting forbidden operations:
+    // - Products mutation: POST, PUT, DELETE /api/products
+    const isProductMutation =
+      (path.startsWith('/api/products') || path.startsWith('/api/v1/products')) &&
+      (method === 'POST' || method === 'PUT' || method === 'DELETE') &&
+      !path.includes('voice-search');
+
+    // - Inventory adjustments, purchases, audits, thresholds
+    const isInventoryManagement =
+      path.startsWith('/api/inventory') || path.startsWith('/api/v1/inventory');
+
+    // - Invoices & OCR
+    const isInvoiceManagement =
+      path.startsWith('/api/invoices') || path.startsWith('/api/v1/invoices');
+
+    // - Reports & CSV exports
+    const isReportsManagement =
+      path.startsWith('/api/reports') || path.startsWith('/api/v1/reports');
+
+    // - Stock Notifications management
+    const isNotificationsManagement =
+      path.startsWith('/api/notifications') || path.startsWith('/api/v1/notifications');
+
+    // - User management
+    const isUserManagement =
+      path.startsWith('/api/users') || path.startsWith('/api/v1/users');
+
+    if (
+      isProductMutation ||
+      isInventoryManagement ||
+      isInvoiceManagement ||
+      isReportsManagement ||
+      isNotificationsManagement ||
+      isUserManagement
+    ) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden',
+        message: `Access Denied: Role [${userRole}] does not have permission to access ${method} ${path}. This resource requires OWNER or ADMIN privileges.`,
+        requiredRoles: ['ROLE_OWNER', 'ROLE_ADMIN'],
+        currentRole: userRole,
+        path: req.path,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    if (isProductSearch || isPosCheckoutOrReceipt || isAuthSelf) {
+      return next();
+    }
+
+    // Default deny for CASHIER on any unlisted administration endpoint
+    return res.status(403).json({
+      success: false,
+      error: 'Forbidden',
+      message: `Access Denied: Role [${userRole}] does not have permission to access ${method} ${path}. Required role: OWNER or ADMIN.`,
+      requiredRoles: ['ROLE_OWNER', 'ROLE_ADMIN'],
+      currentRole: userRole,
+      path: req.path,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // ==========================================
+  // RBAC User Management REST APIs (OWNER & ADMIN only)
+  // GET    /api/users (List all users)
+  // GET    /api/users/:id (Get user by ID)
+  // POST   /api/users (Create new user)
+  // PUT    /api/users/:id (Update user info)
+  // PUT    /api/users/:id/role (Update user role)
+  // PUT    /api/users/:id/status (Enable/Disable user)
+  // DELETE /api/users/:id (Delete user)
+  // ==========================================
+
+  // GET /api/users and /api/v1/users
+  app.get(['/api/users', '/api/v1/users'], (_req: Request, res: Response) => {
+    const list = usersStore.map(toUserDto);
+    res.json({
+      success: true,
+      message: `Retrieved ${list.length} user accounts`,
+      data: list,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // GET /api/users/:id and /api/v1/users/:id
+  app.get(['/api/users/:id', '/api/v1/users/:id'], (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const user = usersStore.find((u) => u.id === id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: `User not found with ID ${id}`,
+        timestamp: new Date().toISOString(),
+      });
+    }
+    return res.json({
+      success: true,
+      message: 'User retrieved successfully',
+      data: toUserDto(user),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // POST /api/users and /api/v1/users (Create user)
+  app.post(['/api/users', '/api/v1/users'], (req: Request, res: Response) => {
+    const { username, password, fullName, email, role } = req.body;
+
+    if (!username || !password || !fullName || !role) {
+      return res.status(400).json({
+        success: false,
+        error: 'Username, password, full name, and role are required',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const trimmedUsername = String(username).trim();
+    if (usersStore.some((u) => u.username.toLowerCase() === trimmedUsername.toLowerCase())) {
+      return res.status(409).json({
+        success: false,
+        error: `Username '${trimmedUsername}' is already taken`,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    let normalizedRole: 'ROLE_OWNER' | 'ROLE_ADMIN' | 'ROLE_MANAGER' | 'ROLE_CASHIER';
+    const roleStr = String(role).trim().toUpperCase();
+    if (roleStr === 'OWNER' || roleStr === 'ROLE_OWNER') {
+      normalizedRole = 'ROLE_OWNER';
+    } else if (roleStr === 'ADMIN' || roleStr === 'ROLE_ADMIN') {
+      normalizedRole = 'ROLE_ADMIN';
+    } else if (roleStr === 'CASHIER' || roleStr === 'ROLE_CASHIER') {
+      normalizedRole = 'ROLE_CASHIER';
+    } else if (roleStr === 'MANAGER' || roleStr === 'ROLE_MANAGER') {
+      normalizedRole = 'ROLE_MANAGER';
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid role. Allowed roles: OWNER, ADMIN, CASHIER',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const newUser = createNewUser(
+      nextUserId++,
+      trimmedUsername,
+      String(password).trim(),
+      String(fullName).trim(),
+      email ? String(email).trim() : `${trimmedUsername}@freshcartpos.com`,
+      normalizedRole
+    );
+
+    usersStore.push(newUser);
+
+    return res.status(201).json({
+      success: true,
+      message: `User created successfully with role ${normalizedRole.replace('ROLE_', '')}`,
+      data: toUserDto(newUser),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // PUT /api/users/:id and /api/v1/users/:id (Update user info)
+  app.put(['/api/users/:id', '/api/v1/users/:id'], (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const user = usersStore.find((u) => u.id === id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: `User not found with ID ${id}`,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const { fullName, email, role, enabled } = req.body;
+    if (fullName) user.fullName = String(fullName).trim();
+    if (email) user.email = String(email).trim();
+    if (enabled !== undefined) user.enabled = Boolean(enabled);
+
+    if (role) {
+      const roleStr = String(role).trim().toUpperCase();
+      if (roleStr === 'OWNER' || roleStr === 'ROLE_OWNER') {
+        user.role = 'ROLE_OWNER';
+      } else if (roleStr === 'ADMIN' || roleStr === 'ROLE_ADMIN') {
+        user.role = 'ROLE_ADMIN';
+      } else if (roleStr === 'CASHIER' || roleStr === 'ROLE_CASHIER') {
+        user.role = 'ROLE_CASHIER';
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: 'User updated successfully',
+      data: toUserDto(user),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // PUT /api/users/:id/role and /api/v1/users/:id/role
+  app.put(['/api/users/:id/role', '/api/v1/users/:id/role'], (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const user = usersStore.find((u) => u.id === id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: `User not found with ID ${id}`,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const { role } = req.body;
+    if (!role) {
+      return res.status(400).json({
+        success: false,
+        error: 'Role is required (OWNER, ADMIN, CASHIER)',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const roleStr = String(role).trim().toUpperCase();
+    if (roleStr === 'OWNER' || roleStr === 'ROLE_OWNER') {
+      user.role = 'ROLE_OWNER';
+    } else if (roleStr === 'ADMIN' || roleStr === 'ROLE_ADMIN') {
+      user.role = 'ROLE_ADMIN';
+    } else if (roleStr === 'CASHIER' || roleStr === 'ROLE_CASHIER') {
+      user.role = 'ROLE_CASHIER';
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid role. Must be OWNER, ADMIN, or CASHIER',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: `User role changed to ${user.role.replace('ROLE_', '')}`,
+      data: toUserDto(user),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // PUT /api/users/:id/status and /api/v1/users/:id/status
+  app.put(['/api/users/:id/status', '/api/v1/users/:id/status'], (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const user = usersStore.find((u) => u.id === id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: `User not found with ID ${id}`,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const { enabled } = req.body;
+    if (enabled === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: 'Enabled status (true/false) is required',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    user.enabled = Boolean(enabled);
+    return res.json({
+      success: true,
+      message: `User account has been ${user.enabled ? 'activated' : 'disabled'}`,
+      data: toUserDto(user),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // DELETE /api/users/:id and /api/v1/users/:id
+  app.delete(['/api/users/:id', '/api/v1/users/:id'], (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const index = usersStore.findIndex((u) => u.id === id);
+    if (index === -1) {
+      return res.status(404).json({
+        success: false,
+        error: `User not found with ID ${id}`,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const session = (req as any).user as SessionToken | undefined;
+    if (session && session.userId === id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot delete your own active user account',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const deleted = usersStore.splice(index, 1)[0];
+    return res.json({
+      success: true,
+      message: `User '${deleted.username}' deleted successfully`,
+      data: toUserDto(deleted),
       timestamp: new Date().toISOString(),
     });
   });
@@ -430,6 +1059,38 @@ async function startServer() {
     });
   });
 
+  // POST /api/products/voice-search and /api/v1/products/voice-search
+  // Cashier, Admin & Owner permitted Voice Search endpoint
+  app.post(['/api/products/voice-search', '/api/v1/products/voice-search'], (req: Request, res: Response) => {
+    const rawTranscript = req.body.transcript || req.body.query || '';
+    let q = String(rawTranscript).trim().toLowerCase();
+    
+    // Strip common speech query prefixes
+    const prefixRegex = /^(can you\s+)?(find\s+me\s+|find\s+|search\s+for\s+|search\s+|look\s+for\s+|look\s+up\s+|show\s+me\s+|get\s+me\s+|get\s+|where\s+is\s+|where\s+are\s+|query\s+)/i;
+    q = q.replace(prefixRegex, '').replace(/[.,!?;:]+$/, '').trim();
+
+    let list = [...productsStore].filter((p) => p.active);
+
+    if (q) {
+      list = list.filter((p) => {
+        const matchesName = p.name.toLowerCase().includes(q);
+        const matchesSku = p.sku.toLowerCase().includes(q);
+        const matchesBarcode = p.barcode ? p.barcode.toLowerCase().includes(q) : false;
+        const matchesCategory = p.categoryName ? p.categoryName.toLowerCase().includes(q) : false;
+        return matchesName || matchesSku || matchesBarcode || matchesCategory;
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Voice search completed for '${rawTranscript}' (cleaned: '${q}')`,
+      transcript: rawTranscript,
+      cleanedTerm: q,
+      data: list,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   // GET /api/products/:id
   app.get('/api/products/:id', (req: Request, res: Response) => {
     const id = Number(req.params.id);
@@ -562,6 +1223,70 @@ async function startServer() {
     res.json({
       success: true,
       message: 'Product updated successfully',
+      data: updated,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // PUT /api/products/:id/threshold & /api/v1/products/:id/threshold
+  // Inventory Threshold Configuration (OWNER/ADMIN only)
+  app.put(['/api/products/:id/threshold', '/api/v1/products/:id/threshold'], (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const product = productsStore.find((p) => p.id === id);
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        error: `Product not found with ID ${id}`,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const { threshold, minimumInventoryThreshold } = req.body;
+    const newThreshold = threshold !== undefined ? Number(threshold) : Number(minimumInventoryThreshold);
+
+    if (isNaN(newThreshold) || newThreshold < 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Inventory threshold must be a non-negative number',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    product.minimumInventoryThreshold = newThreshold;
+    product.updatedAt = new Date().toISOString();
+
+    return res.json({
+      success: true,
+      message: `Inventory alert threshold for '${product.name}' set to ${newThreshold} units`,
+      data: product,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // PUT /api/inventory/thresholds & /api/v1/inventory/thresholds (Batch update)
+  app.put(['/api/inventory/thresholds', '/api/v1/inventory/thresholds'], (req: Request, res: Response) => {
+    const { thresholds } = req.body;
+    if (!Array.isArray(thresholds)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Expected an array of { productId, threshold }',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const updated: any[] = [];
+    for (const item of thresholds) {
+      const p = productsStore.find((prod) => prod.id === Number(item.productId));
+      if (p && typeof item.threshold === 'number' && item.threshold >= 0) {
+        p.minimumInventoryThreshold = Number(item.threshold);
+        p.updatedAt = new Date().toISOString();
+        updated.push({ id: p.id, name: p.name, minimumInventoryThreshold: p.minimumInventoryThreshold });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Updated inventory thresholds for ${updated.length} products`,
       data: updated,
       timestamp: new Date().toISOString(),
     });
@@ -911,6 +1636,45 @@ async function startServer() {
       reason: 'POS Sale. Receipt: RCP-20261008-002',
       referenceId: 'RCP-20261008-002',
       createdAt: new Date(Date.now() - 3600000).toISOString(),
+    },
+    {
+      id: 5,
+      productId: 5,
+      productName: 'Greek Yogurt Plain 32oz',
+      productSku: 'SKU-YOG-001',
+      transactionType: 'DAMAGE',
+      quantity: -1.0,
+      previousQuantity: 6.0,
+      newQuantity: 5.0,
+      reason: 'Dropped during shelf restocking (damaged packaging)',
+      referenceId: 'ADJ-DMG-001',
+      createdAt: new Date(Date.now() - 86400000).toISOString(),
+    },
+    {
+      id: 6,
+      productId: 6,
+      productName: 'Artisan Sourdough Loaf',
+      productSku: 'SKU-BAK-001',
+      transactionType: 'ADJUSTMENT',
+      quantity: -2.0,
+      previousQuantity: 2.0,
+      newQuantity: 0.0,
+      reason: 'Physical inventory cycle count adjustment (expired)',
+      referenceId: 'ADJ-CNT-002',
+      createdAt: new Date(Date.now() - 172800000).toISOString(),
+    },
+    {
+      id: 7,
+      productId: 4,
+      productName: 'Chocolate Milk 1 Quart',
+      productSku: 'SKU-MLK-003',
+      transactionType: 'PURCHASE',
+      quantity: 14.0,
+      previousQuantity: 0.0,
+      newQuantity: 14.0,
+      reason: 'Dairy delivery from Sunny Ridge Dairies',
+      referenceId: 'PO-1003',
+      createdAt: new Date(Date.now() - 345600000).toISOString(),
     },
   ];
 
@@ -1309,8 +2073,8 @@ async function startServer() {
     createdAt: string;
   }
 
-  let nextSaleId = 3;
-  let nextSaleItemId = 6;
+  let nextSaleId = 9;
+  let nextSaleItemId = 22;
   const salesStore: SaleRecord[] = [
     {
       id: 1,
@@ -1364,7 +2128,7 @@ async function startServer() {
           totalAmount: 2.79,
         },
       ],
-      createdAt: new Date(Date.now() - 7200000).toISOString(),
+      createdAt: '2026-10-08T14:30:00.000Z',
     },
     {
       id: 2,
@@ -1404,7 +2168,303 @@ async function startServer() {
           totalAmount: 3.49,
         },
       ],
-      createdAt: new Date(Date.now() - 3600000).toISOString(),
+      createdAt: '2026-10-08T18:15:00.000Z',
+    },
+    {
+      id: 3,
+      receiptNumber: 'RCP-20261009-001',
+      subtotal: 18.95,
+      taxAmount: 0.0,
+      totalAmount: 18.95,
+      status: 'COMPLETED',
+      itemCount: 5,
+      items: [
+        {
+          id: 6,
+          saleId: 3,
+          productId: 2,
+          productName: 'Whole Milk 1 Gallon',
+          productSku: 'SKU-MLK-001',
+          unit: 'GALLON',
+          quantity: 2.0,
+          unitPrice: 3.89,
+          taxRate: 0.0,
+          subtotal: 7.78,
+          taxAmount: 0.0,
+          totalAmount: 7.78,
+        },
+        {
+          id: 7,
+          saleId: 3,
+          productId: 1,
+          productName: 'Organic Cavendish Bananas',
+          productSku: 'SKU-BAN-001',
+          unit: 'KG',
+          quantity: 3.0,
+          unitPrice: 1.29,
+          taxRate: 0.0,
+          subtotal: 3.87,
+          taxAmount: 0.0,
+          totalAmount: 3.87,
+        },
+        {
+          id: 8,
+          saleId: 3,
+          productId: 5,
+          productName: 'Greek Yogurt Plain 32oz',
+          productSku: 'SKU-YOG-001',
+          unit: 'TUB',
+          quantity: 2.0,
+          unitPrice: 3.49,
+          taxRate: 0.0,
+          subtotal: 6.98,
+          taxAmount: 0.0,
+          totalAmount: 6.98,
+        },
+      ],
+      createdAt: '2026-10-09T09:15:00.000Z',
+    },
+    {
+      id: 4,
+      receiptNumber: 'RCP-20261009-002',
+      subtotal: 7.38,
+      taxAmount: 0.0,
+      totalAmount: 7.38,
+      status: 'COMPLETED',
+      itemCount: 2,
+      items: [
+        {
+          id: 9,
+          saleId: 4,
+          productId: 4,
+          productName: 'Chocolate Milk 1 Quart',
+          productSku: 'SKU-MLK-003',
+          unit: 'QUART',
+          quantity: 2.0,
+          unitPrice: 2.79,
+          taxRate: 0.0,
+          subtotal: 5.58,
+          taxAmount: 0.0,
+          totalAmount: 5.58,
+        },
+        {
+          id: 10,
+          saleId: 4,
+          productId: 1,
+          productName: 'Organic Cavendish Bananas',
+          productSku: 'SKU-BAN-001',
+          unit: 'KG',
+          quantity: 1.4,
+          unitPrice: 1.29,
+          taxRate: 0.0,
+          subtotal: 1.80,
+          taxAmount: 0.0,
+          totalAmount: 1.80,
+        },
+      ],
+      createdAt: '2026-10-09T11:45:00.000Z',
+    },
+    {
+      id: 5,
+      receiptNumber: 'RCP-20261006-001',
+      subtotal: 21.64,
+      taxAmount: 0.0,
+      totalAmount: 21.64,
+      status: 'COMPLETED',
+      itemCount: 4,
+      items: [
+        {
+          id: 11,
+          saleId: 5,
+          productId: 3,
+          productName: 'Organic Milk Half Gallon',
+          productSku: 'SKU-MLK-002',
+          unit: 'GALLON',
+          quantity: 3.0,
+          unitPrice: 4.49,
+          taxRate: 0.0,
+          subtotal: 13.47,
+          taxAmount: 0.0,
+          totalAmount: 13.47,
+        },
+        {
+          id: 12,
+          saleId: 5,
+          productId: 6,
+          productName: 'Artisan Sourdough Loaf',
+          productSku: 'SKU-BAK-001',
+          unit: 'LOAF',
+          quantity: 1.0,
+          unitPrice: 4.29,
+          taxRate: 0.0,
+          subtotal: 4.29,
+          taxAmount: 0.0,
+          totalAmount: 4.29,
+        },
+        {
+          id: 13,
+          saleId: 5,
+          productId: 2,
+          productName: 'Whole Milk 1 Gallon',
+          productSku: 'SKU-MLK-001',
+          unit: 'GALLON',
+          quantity: 1.0,
+          unitPrice: 3.89,
+          taxRate: 0.0,
+          subtotal: 3.89,
+          taxAmount: 0.0,
+          totalAmount: 3.89,
+        },
+      ],
+      createdAt: '2026-10-06T15:20:00.000Z',
+    },
+    {
+      id: 6,
+      receiptNumber: 'RCP-20261002-001',
+      subtotal: 29.83,
+      taxAmount: 0.0,
+      totalAmount: 29.83,
+      status: 'COMPLETED',
+      itemCount: 6,
+      items: [
+        {
+          id: 14,
+          saleId: 6,
+          productId: 2,
+          productName: 'Whole Milk 1 Gallon',
+          productSku: 'SKU-MLK-001',
+          unit: 'GALLON',
+          quantity: 3.0,
+          unitPrice: 3.89,
+          taxRate: 0.0,
+          subtotal: 11.67,
+          taxAmount: 0.0,
+          totalAmount: 11.67,
+        },
+        {
+          id: 15,
+          saleId: 6,
+          productId: 5,
+          productName: 'Greek Yogurt Plain 32oz',
+          productSku: 'SKU-YOG-001',
+          unit: 'TUB',
+          quantity: 3.0,
+          unitPrice: 3.49,
+          taxRate: 0.0,
+          subtotal: 10.47,
+          taxAmount: 0.0,
+          totalAmount: 10.47,
+        },
+        {
+          id: 16,
+          saleId: 6,
+          productId: 1,
+          productName: 'Organic Cavendish Bananas',
+          productSku: 'SKU-BAN-001',
+          unit: 'KG',
+          quantity: 6.0,
+          unitPrice: 1.29,
+          taxRate: 0.0,
+          subtotal: 7.74,
+          taxAmount: 0.0,
+          totalAmount: 7.74,
+        },
+      ],
+      createdAt: '2026-10-02T13:10:00.000Z',
+    },
+    {
+      id: 7,
+      receiptNumber: 'RCP-20260928-001',
+      subtotal: 42.15,
+      taxAmount: 0.0,
+      totalAmount: 42.15,
+      status: 'COMPLETED',
+      itemCount: 8,
+      items: [
+        {
+          id: 17,
+          saleId: 7,
+          productId: 3,
+          productName: 'Organic Milk Half Gallon',
+          productSku: 'SKU-MLK-002',
+          unit: 'GALLON',
+          quantity: 4.0,
+          unitPrice: 4.49,
+          taxRate: 0.0,
+          subtotal: 17.96,
+          taxAmount: 0.0,
+          totalAmount: 17.96,
+        },
+        {
+          id: 18,
+          saleId: 7,
+          productId: 6,
+          productName: 'Artisan Sourdough Loaf',
+          productSku: 'SKU-BAK-001',
+          unit: 'LOAF',
+          quantity: 3.0,
+          unitPrice: 4.29,
+          taxRate: 0.0,
+          subtotal: 12.87,
+          taxAmount: 0.0,
+          totalAmount: 12.87,
+        },
+        {
+          id: 19,
+          saleId: 7,
+          productId: 4,
+          productName: 'Chocolate Milk 1 Quart',
+          productSku: 'SKU-MLK-003',
+          unit: 'QUART',
+          quantity: 4.0,
+          unitPrice: 2.79,
+          taxRate: 0.0,
+          subtotal: 11.16,
+          taxAmount: 0.0,
+          totalAmount: 11.16,
+        },
+      ],
+      createdAt: '2026-09-28T16:40:00.000Z',
+    },
+    {
+      id: 8,
+      receiptNumber: 'RCP-20260918-002',
+      subtotal: 35.80,
+      taxAmount: 0.0,
+      totalAmount: 35.80,
+      status: 'COMPLETED',
+      itemCount: 7,
+      items: [
+        {
+          id: 20,
+          saleId: 8,
+          productId: 2,
+          productName: 'Whole Milk 1 Gallon',
+          productSku: 'SKU-MLK-001',
+          unit: 'GALLON',
+          quantity: 5.0,
+          unitPrice: 3.89,
+          taxRate: 0.0,
+          subtotal: 19.45,
+          taxAmount: 0.0,
+          totalAmount: 19.45,
+        },
+        {
+          id: 21,
+          saleId: 8,
+          productId: 1,
+          productName: 'Organic Cavendish Bananas',
+          productSku: 'SKU-BAN-001',
+          unit: 'KG',
+          quantity: 12.7,
+          unitPrice: 1.29,
+          taxRate: 0.0,
+          subtotal: 16.35,
+          taxAmount: 0.0,
+          totalAmount: 16.35,
+        },
+      ],
+      createdAt: '2026-09-18T10:15:00.000Z',
     },
   ];
 

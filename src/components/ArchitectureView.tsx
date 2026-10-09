@@ -67,6 +67,15 @@ export const ArchitectureView: React.FC = () => {
       color: 'border-teal-500 bg-teal-50/30',
       tag: 'Storage',
     },
+    {
+      name: '7. Security & Authorization Layer',
+      tech: 'Spring Security 6.x + BCrypt Hashing + JWT Bearer Tokens',
+      role: 'Authentication, password salted hashing (never plain text), and API protection',
+      files: ['SecurityConfig.java', 'JwtAuthenticationFilter.java', 'AuthService.java', 'User.java'],
+      icon: ShieldCheck,
+      color: 'border-purple-500 bg-purple-50/30',
+      tag: 'Spring Security',
+    },
   ];
 
   return (

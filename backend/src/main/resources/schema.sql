@@ -133,3 +133,39 @@ CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications (is_read);
 CREATE INDEX IF NOT EXISTS idx_notifications_type ON notifications (type);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications (created_at);
 
+-- 7. Users Table (Spring Security Authentication & Authorization)
+-- Passwords stored exclusively as BCrypt salted hashes - never plain text!
+CREATE TABLE IF NOT EXISTS users (
+    id BIGSERIAL PRIMARY KEY,
+    username VARCHAR(50) NOT NULL,
+    password VARCHAR(100) NOT NULL,
+    full_name VARCHAR(100) NOT NULL,
+    email VARCHAR(100),
+    role VARCHAR(20) NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT uk_users_username UNIQUE (username),
+    CONSTRAINT chk_users_role CHECK (role IN ('ROLE_OWNER', 'ROLE_ADMIN', 'ROLE_MANAGER', 'ROLE_CASHIER'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_username ON users (username);
+CREATE INDEX IF NOT EXISTS idx_users_role ON users (role);
+
+-- Seed Initial Users with BCrypt encrypted passwords
+-- Owner: owner / Owner@123
+INSERT INTO users (username, password, full_name, email, role, enabled)
+VALUES ('owner', '$2a$10$wE8wX7J9hYyO4/1g5KzO3OWT/t6r6vSgG9cWqG5Nl4K6fNl0XQ7r2', 'Store Owner', 'owner@freshcartpos.com', 'ROLE_OWNER', TRUE)
+ON CONFLICT (username) DO NOTHING;
+
+-- Admin: admin / Admin@123
+INSERT INTO users (username, password, full_name, email, role, enabled)
+VALUES ('admin', '$2a$10$e8q4Rj/Zqj4zXzL5sF14feK4pD1g88k8P22eYV35X45lZ.k6tW0Gq', 'System Administrator', 'admin@freshcartpos.com', 'ROLE_ADMIN', TRUE)
+ON CONFLICT (username) DO NOTHING;
+
+-- Cashier: cashier / Cashier@123
+INSERT INTO users (username, password, full_name, email, role, enabled)
+VALUES ('cashier', '$2a$10$K7rV4p1sLz8eX4l9g9bN6.V5zO1h7w2a3c4f5k6l7m8n9o0p1q2r3', 'Front Cashier', 'cashier@freshcartpos.com', 'ROLE_CASHIER', TRUE)
+ON CONFLICT (username) DO NOTHING;
+

@@ -1,5 +1,6 @@
 import { Product, CreateProductInput, UpdateProductInput } from '../types/product';
 import { ApiResponse } from '../types/health';
+import { authFetch } from '../utils/authStorage';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -63,7 +64,7 @@ export async function fetchProducts(
   if (activeOnly) params.append('activeOnly', 'true');
 
   const url = `${BASE_URL}/api/products${params.toString() ? `?${params.toString()}` : ''}`;
-  const res = await fetch(url, {
+  const res = await authFetch(url, {
     headers: { Accept: 'application/json' },
   });
 
@@ -83,7 +84,7 @@ export async function searchProducts(
   if (activeOnly) params.append('activeOnly', 'true');
 
   const url = `${BASE_URL}/api/products/search${params.toString() ? `?${params.toString()}` : ''}`;
-  const res = await fetch(url, {
+  const res = await authFetch(url, {
     headers: { Accept: 'application/json' },
   });
 
@@ -91,14 +92,14 @@ export async function searchProducts(
 }
 
 export async function fetchProductById(id: number): Promise<Product> {
-  const res = await fetch(`${BASE_URL}/api/products/${id}`, {
+  const res = await authFetch(`${BASE_URL}/api/products/${id}`, {
     headers: { Accept: 'application/json' },
   });
   return handleResponse<Product>(res);
 }
 
 export async function createProduct(input: CreateProductInput): Promise<Product> {
-  const res = await fetch(`${BASE_URL}/api/products`, {
+  const res = await authFetch(`${BASE_URL}/api/products`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -110,7 +111,7 @@ export async function createProduct(input: CreateProductInput): Promise<Product>
 }
 
 export async function updateProduct(id: number, input: UpdateProductInput): Promise<Product> {
-  const res = await fetch(`${BASE_URL}/api/products/${id}`, {
+  const res = await authFetch(`${BASE_URL}/api/products/${id}`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -141,7 +142,7 @@ export async function toggleProductActive(product: Product, newActiveStatus: boo
 }
 
 export async function deleteProduct(id: number): Promise<void> {
-  const res = await fetch(`${BASE_URL}/api/products/${id}`, {
+  const res = await authFetch(`${BASE_URL}/api/products/${id}`, {
     method: 'DELETE',
   });
   await handleResponse<void>(res);

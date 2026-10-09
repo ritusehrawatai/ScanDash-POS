@@ -16,6 +16,7 @@ import {
   updateProduct,
   toggleProductActive,
 } from '../../api/productApi';
+import { updateProductThreshold } from '../../api/userApi';
 import { ProductSearchBar } from '../common/ProductSearchBar';
 import { ProductDetailModal } from './ProductDetailModal';
 import { ProductFormModal } from './ProductFormModal';
@@ -397,7 +398,25 @@ export const ProductList: React.FC = () => {
 
                     {/* Minimum Threshold */}
                     <td className="py-3 px-3 font-mono text-stone-600 text-right">
-                      {p.minimumInventoryThreshold}
+                      <button
+                        onClick={async () => {
+                          const val = prompt(`Set minimum stock threshold for '${p.name}':`, String(p.minimumInventoryThreshold));
+                          if (val !== null && !isNaN(parseInt(val)) && parseInt(val) >= 0) {
+                            try {
+                              const newThresh = parseInt(val);
+                              await updateProductThreshold(p.id, newThresh);
+                              setProducts((prev) => prev.map((item) => (item.id === p.id ? { ...item, minimumInventoryThreshold: newThresh } : item)));
+                              showToast(`Threshold for '${p.name}' updated to ${newThresh} units`);
+                            } catch (err: any) {
+                              showToast(err.message || 'Failed to update threshold', 'error');
+                            }
+                          }
+                        }}
+                        className="px-2 py-0.5 rounded bg-stone-100 hover:bg-emerald-100 hover:text-emerald-900 border border-stone-200 transition cursor-pointer font-bold text-xs"
+                        title="Click to adjust inventory threshold (OWNER/ADMIN only)"
+                      >
+                        {p.minimumInventoryThreshold}
+                      </button>
                     </td>
 
                     {/* Status */}

@@ -1,4 +1,5 @@
 import { NotificationItem } from '../types/notification';
+import { authFetch } from '../utils/authStorage';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -23,7 +24,7 @@ export async function fetchNotifications(unreadOnly: boolean = false): Promise<N
     ? `${BASE_URL}/api/notifications?unreadOnly=true`
     : `${BASE_URL}/api/notifications`;
 
-  const res = await fetch(url);
+  const res = await authFetch(url);
   if (!res.ok) {
     let errMsg = `Failed to fetch notifications (${res.status})`;
     try {
@@ -41,7 +42,7 @@ export async function fetchNotifications(unreadOnly: boolean = false): Promise<N
  * Fetch total unread stock notifications count.
  */
 export async function fetchUnreadCount(): Promise<number> {
-  const res = await fetch(`${BASE_URL}/api/notifications/unread-count`);
+  const res = await authFetch(`${BASE_URL}/api/notifications/unread-count`);
   if (!res.ok) {
     let errMsg = `Failed to fetch unread count (${res.status})`;
     try {
@@ -59,7 +60,7 @@ export async function fetchUnreadCount(): Promise<number> {
  * Mark a single notification as read.
  */
 export async function markNotificationAsRead(id: number): Promise<NotificationItem> {
-  const res = await fetch(`${BASE_URL}/api/notifications/${id}/read`, {
+  const res = await authFetch(`${BASE_URL}/api/notifications/${id}/read`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -83,7 +84,7 @@ export async function markNotificationAsRead(id: number): Promise<NotificationIt
  * Mark all unread notifications as read.
  */
 export async function markAllNotificationsAsRead(): Promise<number> {
-  const res = await fetch(`${BASE_URL}/api/notifications/read-all`, {
+  const res = await authFetch(`${BASE_URL}/api/notifications/read-all`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',

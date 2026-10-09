@@ -1,4 +1,5 @@
 import { PurchaseInvoice, InvoiceUploadResponse, InvoiceListResponse } from '../types/invoice';
+import { authFetch } from '../utils/authStorage';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -31,7 +32,7 @@ export async function uploadInvoice(
   }
   formData.append('uploadedBy', uploadedBy);
 
-  const response = await fetch(`${BASE_URL}/api/invoices/upload`, {
+  const response = await authFetch(`${BASE_URL}/api/invoices/upload`, {
     method: 'POST',
     body: formData,
   });
@@ -53,7 +54,7 @@ export async function uploadInvoice(
  * Fetch all purchase invoices.
  */
 export async function fetchInvoices(): Promise<PurchaseInvoice[]> {
-  const response = await fetch(`${BASE_URL}/api/invoices`);
+  const response = await authFetch(`${BASE_URL}/api/invoices`);
   const json: InvoiceListResponse = await response.json();
 
   if (!response.ok || !json.success) {
@@ -67,7 +68,7 @@ export async function fetchInvoices(): Promise<PurchaseInvoice[]> {
  * Fetch a single invoice by ID.
  */
 export async function fetchInvoiceById(id: number): Promise<PurchaseInvoice> {
-  const response = await fetch(`${BASE_URL}/api/invoices/${id}`);
+  const response = await authFetch(`${BASE_URL}/api/invoices/${id}`);
   const json = await response.json();
 
   if (!response.ok || !json.success) {
@@ -81,7 +82,7 @@ export async function fetchInvoiceById(id: number): Promise<PurchaseInvoice> {
  * Delete an uploaded invoice.
  */
 export async function deleteInvoice(id: number): Promise<void> {
-  const response = await fetch(`${BASE_URL}/api/invoices/${id}`, {
+  const response = await authFetch(`${BASE_URL}/api/invoices/${id}`, {
     method: 'DELETE',
   });
   const json = await response.json();
@@ -108,7 +109,7 @@ export async function processInvoiceOcr(id: number): Promise<{
   ocrResult: import('../types/invoice').InvoiceOcrResult;
   invoice: PurchaseInvoice;
 }> {
-  const response = await fetch(`${BASE_URL}/api/invoices/${id}/ocr`, {
+  const response = await authFetch(`${BASE_URL}/api/invoices/${id}/ocr`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -134,7 +135,7 @@ export async function processInvoiceOcr(id: number): Promise<{
  * Fetch OCR extracted data for an invoice.
  */
 export async function fetchInvoiceOcr(id: number): Promise<import('../types/invoice').InvoiceOcrResult> {
-  const response = await fetch(`${BASE_URL}/api/invoices/${id}/ocr`);
+  const response = await authFetch(`${BASE_URL}/api/invoices/${id}/ocr`);
   const json = await response.json();
 
   if (!response.ok || !json.success) {
@@ -158,7 +159,7 @@ export async function saveInvoiceReview(
   id: number,
   payload: import('../types/invoice').InvoiceReviewPayload
 ): Promise<PurchaseInvoice> {
-  const response = await fetch(`${BASE_URL}/api/invoices/${id}/review`, {
+  const response = await authFetch(`${BASE_URL}/api/invoices/${id}/review`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -199,7 +200,7 @@ export async function confirmInvoice(
   id: number,
   options?: import('../types/invoice').InvoiceConfirmOptions
 ): Promise<import('../types/invoice').InvoiceConfirmResponse> {
-  const response = await fetch(`${BASE_URL}/api/invoices/${id}/confirm`, {
+  const response = await authFetch(`${BASE_URL}/api/invoices/${id}/confirm`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -225,7 +226,7 @@ export async function confirmInvoice(
 export async function fetchPurchaseInvoiceItems(
   id: number
 ): Promise<import('../types/invoice').PurchaseInvoiceItemRecord[]> {
-  const response = await fetch(`${BASE_URL}/api/invoices/${id}/items`);
+  const response = await authFetch(`${BASE_URL}/api/invoices/${id}/items`);
   const json = await response.json();
 
   if (!response.ok || !json.success) {
@@ -251,7 +252,7 @@ export async function matchInvoiceProduct(params: {
   barcode?: string;
   itemId?: string;
 }): Promise<import('../types/invoice').ProductMatchSuggestion> {
-  const response = await fetch(`${BASE_URL}/api/invoices/match-product`, {
+  const response = await authFetch(`${BASE_URL}/api/invoices/match-product`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

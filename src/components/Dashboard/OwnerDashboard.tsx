@@ -23,6 +23,7 @@ import {
   Coins,
   History,
   Store,
+  BarChart3,
 } from 'lucide-react';
 import { NavTab } from '../Sidebar';
 import { Product } from '../../types/product';
@@ -329,6 +330,14 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({ onNavigate }) =>
 
           {onNavigate && (
             <>
+              <button
+                onClick={() => onNavigate('reports')}
+                className="px-3.5 py-2 rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer border border-stone-300"
+              >
+                <BarChart3 className="w-3.5 h-3.5 text-stone-600" />
+                <span>Reports & CSV</span>
+              </button>
+
               <button
                 onClick={() => onNavigate('pos')}
                 className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"

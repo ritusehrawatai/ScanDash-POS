@@ -7,6 +7,7 @@ import {
   StockStatus,
 } from '../types/inventory';
 import { fetchProducts } from './productApi';
+import { authFetch } from '../utils/authStorage';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -72,7 +73,7 @@ export function computeStockStatus(
  */
 export async function fetchAllInventory(): Promise<InventoryItem[]> {
   const [invList, products] = await Promise.all([
-    fetch(`${BASE_URL}/api/inventory`, { headers: { Accept: 'application/json' } }).then((r) =>
+    authFetch(`${BASE_URL}/api/inventory`, { headers: { Accept: 'application/json' } }).then((r) =>
       handleResponse<any[]>(r)
     ),
     fetchProducts().catch(() => []),
@@ -105,7 +106,7 @@ export async function fetchAllInventory(): Promise<InventoryItem[]> {
  */
 export async function fetchProductInventory(productId: number): Promise<InventoryItem> {
   const [inv, prod] = await Promise.all([
-    fetch(`${BASE_URL}/api/inventory/${productId}`, {
+    authFetch(`${BASE_URL}/api/inventory/${productId}`, {
       headers: { Accept: 'application/json' },
     }).then((r) => handleResponse<any>(r)),
     fetchProducts()
@@ -133,7 +134,7 @@ export async function fetchProductInventory(productId: number): Promise<Inventor
  * Add stock to a product (e.g. PURCHASE, RETURN).
  */
 export async function addStock(payload: AddStockPayload): Promise<InventoryTransactionItem> {
-  const res = await fetch(`${BASE_URL}/api/inventory/add`, {
+  const res = await authFetch(`${BASE_URL}/api/inventory/add`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -150,7 +151,7 @@ export async function addStock(payload: AddStockPayload): Promise<InventoryTrans
  * Prevents negative stock.
  */
 export async function removeStock(payload: RemoveStockPayload): Promise<InventoryTransactionItem> {
-  const res = await fetch(`${BASE_URL}/api/inventory/remove`, {
+  const res = await authFetch(`${BASE_URL}/api/inventory/remove`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -166,7 +167,7 @@ export async function removeStock(payload: RemoveStockPayload): Promise<Inventor
  * Adjust stock directly to target quantity.
  */
 export async function adjustStock(payload: AdjustStockPayload): Promise<InventoryTransactionItem> {
-  const res = await fetch(`${BASE_URL}/api/inventory/adjust`, {
+  const res = await authFetch(`${BASE_URL}/api/inventory/adjust`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -188,7 +189,7 @@ export async function fetchInventoryTransactions(
     ? `${BASE_URL}/api/inventory/${productId}/transactions`
     : `${BASE_URL}/api/inventory/transactions`;
 
-  const res = await fetch(url, {
+  const res = await authFetch(url, {
     headers: { Accept: 'application/json' },
   });
 

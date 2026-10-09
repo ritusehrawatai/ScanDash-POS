@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Play, Copy, Check, Terminal } from 'lucide-react';
+import { authFetch } from '../utils/authStorage';
 
 interface EndpointOption {
   label: string;
@@ -9,6 +10,67 @@ interface EndpointOption {
 }
 
 const ENDPOINTS: EndpointOption[] = [
+  {
+    label: 'POST /api/v1/auth/login — Spring Security Authentication (Returns JWT Bearer Token)',
+    method: 'POST',
+    path: '/api/v1/auth/login',
+    defaultBody: JSON.stringify(
+      {
+        username: 'owner',
+        password: 'Owner@123',
+      },
+      null,
+      2
+    ),
+  },
+  {
+    label: 'GET /api/v1/auth/me — Get Authenticated User Profile (Requires Bearer Token)',
+    method: 'GET',
+    path: '/api/v1/auth/me',
+  },
+  {
+    label: 'GET /api/users — List All Users (RBAC: OWNER/ADMIN only, 403 Forbidden for CASHIER)',
+    method: 'GET',
+    path: '/api/users',
+  },
+  {
+    label: 'POST /api/users — Create User (RBAC: OWNER/ADMIN only, 403 Forbidden for CASHIER)',
+    method: 'POST',
+    path: '/api/users',
+    defaultBody: JSON.stringify(
+      {
+        username: 'cashier_lane2',
+        password: 'Cashier@456',
+        fullName: 'Lane 2 Cashier',
+        email: 'lane2@freshcartpos.com',
+        role: 'ROLE_CASHIER',
+      },
+      null,
+      2
+    ),
+  },
+  {
+    label: 'PUT /api/products/1/threshold — Configure Inventory Threshold (RBAC: OWNER/ADMIN only)',
+    method: 'PUT',
+    path: '/api/products/1/threshold',
+    defaultBody: JSON.stringify(
+      {
+        threshold: 25,
+      },
+      null,
+      2
+    ),
+  },
+  {
+    label: 'GET /api/products?search=banana — Search Products (CASHIER, ADMIN, OWNER allowed)',
+    method: 'GET',
+    path: '/api/products?search=banana',
+  },
+  {
+    label: 'POST /api/v1/auth/logout — Invalidate Current Session / Token',
+    method: 'POST',
+    path: '/api/v1/auth/logout',
+  },
   {
     label: 'POST /api/invoices/1/ocr — Run Tesseract OCR on uploaded invoice (Extract items, flag low-confidence values)',
     method: 'POST',
@@ -319,7 +381,7 @@ export const ApiExplorer: React.FC = () => {
         options.body = requestBody;
       }
 
-      const res = await fetch(selected.path, options);
+      const res = await authFetch(selected.path, options);
       const latency = Math.round(performance.now() - start);
       setExecutionTime(latency);
       setResponseStatus(res.status);

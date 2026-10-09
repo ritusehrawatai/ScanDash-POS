@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Store, RefreshCw, Activity, CheckCircle2, AlertCircle, Bell } from 'lucide-react';
+import { Store, RefreshCw, Activity, CheckCircle2, AlertCircle, Bell, LogOut, User as UserIcon, Shield } from 'lucide-react';
 import { NotificationDropdown } from './Notification/NotificationDropdown';
 import { fetchUnreadCount } from '../api/notificationApi';
+import { useAuth } from '../context/AuthContext';
 
 interface HeaderProps {
   onRefresh: () => void;
@@ -18,6 +19,7 @@ export const Header: React.FC<HeaderProps> = ({
   latencyMs,
   lastChecked,
 }) => {
+  const { user, logout, quickSwitchUser } = useAuth();
   const [currentTime, setCurrentTime] = useState<string>('');
   const [isNotificationsOpen, setIsNotificationsOpen] = useState<boolean>(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
@@ -149,6 +151,78 @@ export const Header: React.FC<HeaderProps> = ({
             onCountChange={(count) => setUnreadCount(count)}
           />
         </div>
+
+        {/* Authenticated User Profile & Role Switcher */}
+        {user && (
+          <div className="flex items-center gap-3 pl-2 border-l border-stone-200">
+            {/* Quick Demo Role Switcher */}
+            <div className="hidden lg:flex items-center gap-1 bg-stone-100 p-1 rounded-xl border border-stone-200">
+              <span className="text-[10px] font-semibold text-stone-500 uppercase px-1.5 tracking-wider">
+                RBAC Test:
+              </span>
+              <button
+                onClick={() => quickSwitchUser('owner')}
+                className={`px-2 py-0.5 text-[10px] font-bold rounded-lg transition cursor-pointer ${
+                  user.role === 'ROLE_OWNER'
+                    ? 'bg-emerald-700 text-white shadow-xs'
+                    : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200'
+                }`}
+                title="Switch to Owner account"
+              >
+                Owner
+              </button>
+              <button
+                onClick={() => quickSwitchUser('admin')}
+                className={`px-2 py-0.5 text-[10px] font-bold rounded-lg transition cursor-pointer ${
+                  user.role === 'ROLE_ADMIN'
+                    ? 'bg-purple-700 text-white shadow-xs'
+                    : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200'
+                }`}
+                title="Switch to Admin account"
+              >
+                Admin
+              </button>
+              <button
+                onClick={() => quickSwitchUser('cashier')}
+                className={`px-2 py-0.5 text-[10px] font-bold rounded-lg transition cursor-pointer ${
+                  user.role === 'ROLE_CASHIER'
+                    ? 'bg-amber-600 text-white shadow-xs'
+                    : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200'
+                }`}
+                title="Switch to Cashier account"
+              >
+                Cashier
+              </button>
+            </div>
+
+            <div className="hidden md:flex flex-col items-end text-right">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-semibold text-stone-900">{user.fullName || user.username}</span>
+                <span
+                  className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase ${
+                    user.role === 'ROLE_OWNER'
+                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                      : user.role === 'ROLE_ADMIN'
+                      ? 'bg-purple-100 text-purple-800 border border-purple-300'
+                      : 'bg-amber-100 text-amber-900 border border-amber-300'
+                  }`}
+                >
+                  {user.role.replace('ROLE_', '')}
+                </span>
+              </div>
+              <span className="text-[11px] text-stone-400 font-mono">@{user.username}</span>
+            </div>
+
+            <button
+              onClick={() => logout()}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-stone-600 hover:text-rose-700 bg-stone-50 hover:bg-rose-50 border border-stone-200 hover:border-rose-200 rounded-lg transition-colors cursor-pointer"
+              title="Sign Out / Logout"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Sign Out</span>
+            </button>
+          </div>
+        )}
       </div>
     </header>
   );
